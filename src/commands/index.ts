@@ -1,6 +1,7 @@
 import {
   REST,
   Routes,
+  type ChatInputCommandInteraction,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from 'discord.js';
 import { getConfig, requireClientId } from '../config.js';
@@ -10,7 +11,7 @@ import { consentCommand } from './consent.js';
 
 export interface CommandModule {
   data: RESTPostAPIChatInputApplicationCommandsJSONBody;
-  // execute handler will be typed properly once we wire up interactions
+  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 }
 
 const commands: CommandModule[] = [sessionCommand, consentCommand];

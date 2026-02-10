@@ -9,6 +9,7 @@ import { getConfig } from './config.js';
 import { logger } from './logger.js';
 import { registerCommands, getCommandMap } from './commands/index.js';
 import { initDb, recoverStaleSessions, closeDb } from './db/index.js';
+import { shutdownAllSessions } from './session-manager.js';
 
 const config = getConfig();
 
@@ -35,14 +36,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
-  // Command execute handlers will be wired in Step 4
   logger.info(
-    `Command received: /${interaction.commandName} ${interaction.options.getSubcommand(false) ?? ''}`
+    `Command: /${interaction.commandName} ${interaction.options.getSubcommand(false) ?? ''} by ${interaction.user.tag}`
   );
-  await interaction.reply({
-    content: 'Command received (handler not yet implemented).',
-    ephemeral: true,
-  });
+
+  await command.execute(interaction);
 });
 
 // --- Graceful shutdown ---
@@ -53,10 +51,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info(`Received ${signal} — starting graceful shutdown...`);
+  logger.info(`Received ${signal} -- starting graceful shutdown...`);
 
   try {
-    // TODO (Step 4+): Stop active sessions, finalize audio files
+    await shutdownAllSessions();
     client.destroy();
     closeDb();
     logger.info('Discord client destroyed. Goodbye.');
