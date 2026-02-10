@@ -1,0 +1,14 @@
+{
+  "dataDir": "./data/sessions",
+  "dbPath": "./data/bot.sqlite",
+  "diskWarningThresholdMB": 500,
+  "eventLoopLagThresholdMs": 100,
+  "maxBurstDurationMinutes": 10,
+  "guilds": {
+    "GUILD_ID_HERE": {
+      "textChannels": ["CHANNEL_ID_HERE"],
+      "gmRoleId": "ROLE_ID_HERE",
+      "timezone": "America/New_York"
+    }
+  }
+}
