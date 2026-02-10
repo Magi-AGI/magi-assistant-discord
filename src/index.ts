@@ -11,6 +11,7 @@ import { registerCommands, getCommandMap } from './commands/index.js';
 import { initDb, recoverStaleSessions, closeDb } from './db/index.js';
 import { shutdownAllSessions } from './session-manager.js';
 import { registerLateJoinHandler } from './voice/late-join.js';
+import { registerTextMonitor } from './text/monitor.js';
 
 const config = getConfig();
 
@@ -92,6 +93,7 @@ async function main(): Promise<void> {
 
   await registerCommands();
   registerLateJoinHandler(client);
+  registerTextMonitor(client);
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`Bot online as ${readyClient.user.tag}`);
