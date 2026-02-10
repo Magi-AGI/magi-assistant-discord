@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
@@ -52,15 +53,15 @@ export const sessionCommand: CommandModule = {
           await sessionStatus(interaction);
           break;
         default:
-          await interaction.reply({ content: `Unknown subcommand: ${subcommand}`, ephemeral: true });
+          await interaction.reply({ content: `Unknown subcommand: ${subcommand}`, flags: MessageFlags.Ephemeral });
       }
     } catch (err) {
       logger.error(`Error handling /session ${subcommand}:`, err);
-      const reply = { content: 'An error occurred while processing the command.', ephemeral: true };
+      const msg = 'An error occurred while processing the command.';
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(reply.content);
+        await interaction.editReply(msg);
       } else {
-        await interaction.reply(reply);
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
       }
     }
   },

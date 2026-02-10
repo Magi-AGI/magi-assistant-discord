@@ -1,6 +1,7 @@
 import {
   type ChatInputCommandInteraction,
   type GuildMember,
+  MessageFlags,
   PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
@@ -47,15 +48,15 @@ export const consentCommand: CommandModule = {
           await handleRevoke(interaction);
           break;
         default:
-          await interaction.reply({ content: `Unknown subcommand: ${subcommand}`, ephemeral: true });
+          await interaction.reply({ content: `Unknown subcommand: ${subcommand}`, flags: MessageFlags.Ephemeral });
       }
     } catch (err) {
       logger.error(`Error handling /consent ${subcommand}:`, err);
-      const reply = { content: 'An error occurred while processing the command.', ephemeral: true };
+      const msg = 'An error occurred while processing the command.';
       if (interaction.deferred || interaction.replied) {
-        await interaction.editReply(reply.content);
+        await interaction.editReply(msg);
       } else {
-        await interaction.reply(reply);
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
       }
     }
   },
@@ -64,7 +65,7 @@ export const consentCommand: CommandModule = {
 async function handleToggle(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -73,7 +74,7 @@ async function handleToggle(interaction: ChatInputCommandInteraction): Promise<v
   if (!member.permissions.has(PermissionFlagsBits.ManageGuild)) {
     await interaction.reply({
       content: 'Only server managers can toggle consent requirements.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -89,7 +90,7 @@ async function handleToggle(interaction: ChatInputCommandInteraction): Promise<v
       (newValue
         ? 'Players must use `/consent accept` to be recorded.'
         : 'All users will be recorded without explicit consent.'),
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 
   logger.info(`Consent toggled to ${status} in guild ${guild.id} by ${interaction.user.tag}`);
@@ -98,7 +99,7 @@ async function handleToggle(interaction: ChatInputCommandInteraction): Promise<v
 async function handleAccept(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -106,7 +107,7 @@ async function handleAccept(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.reply({
     content: 'You have **accepted** recording consent for this server. Your audio and text will be captured during sessions.',
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 
   logger.info(`Consent accepted by ${interaction.user.tag} in guild ${guild.id}`);
@@ -125,7 +126,7 @@ async function handleAccept(interaction: ChatInputCommandInteraction): Promise<v
 async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -134,7 +135,7 @@ async function handleRevoke(interaction: ChatInputCommandInteraction): Promise<v
   await interaction.reply({
     content: 'You have **revoked** recording consent for this server.\n' +
       'Your audio and text capture will stop going forward. Already-recorded data is retained.',
-    ephemeral: true,
+    flags: MessageFlags.Ephemeral,
   });
 
   logger.info(`Consent revoked by ${interaction.user.tag} in guild ${guild.id}`);

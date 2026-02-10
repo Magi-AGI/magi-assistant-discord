@@ -11,6 +11,7 @@ import {
   type TextChannel,
   ChannelType,
   EmbedBuilder,
+  MessageFlags,
 } from 'discord.js';
 import { v4 as uuidv4 } from 'uuid';
 import * as path from 'path';
@@ -70,7 +71,7 @@ export async function startSession(
 ): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -78,7 +79,7 @@ export async function startSession(
   if (startLocks.has(guild.id)) {
     await interaction.reply({
       content: 'A session start is already in progress. Please wait.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -89,7 +90,7 @@ export async function startSession(
   if (!voiceChannel || voiceChannel.type !== ChannelType.GuildVoice) {
     await interaction.reply({
       content: 'You must be in a voice channel to start a recording session.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -99,7 +100,7 @@ export async function startSession(
   if (existing) {
     await interaction.reply({
       content: `A session is already active (session ID: ${existing.id}). Use \`/session stop\` to end it first.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -108,7 +109,7 @@ export async function startSession(
   if (activeSessions.has(guild.id)) {
     await interaction.reply({
       content: 'A session is already running in this server. Use `/session stop` to end it first.',
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -266,13 +267,13 @@ export async function stopSession(
 ): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const session = activeSessions.get(guild.id);
   if (!session) {
-    await interaction.reply({ content: 'No active recording session in this server.', ephemeral: true });
+    await interaction.reply({ content: 'No active recording session in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -331,13 +332,13 @@ export async function sessionStatus(
 ): Promise<void> {
   const guild = interaction.guild;
   if (!guild) {
-    await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
+    await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const session = activeSessions.get(guild.id);
   if (!session) {
-    await interaction.reply({ content: 'No active recording session in this server.', ephemeral: true });
+    await interaction.reply({ content: 'No active recording session in this server.', flags: MessageFlags.Ephemeral });
     return;
   }
 
@@ -372,7 +373,7 @@ export async function sessionStatus(
     )
     .setTimestamp();
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 // --- Helpers ---
