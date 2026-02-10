@@ -26,6 +26,7 @@ import {
   getSessionParticipants,
   getSessionTracks,
 } from './db/queries.js';
+import { SessionRecorder } from './voice/recorder.js';
 
 /** Runtime state for an active recording session. */
 export interface ActiveSession {
@@ -41,7 +42,7 @@ export interface ActiveSession {
   originalNickname: string | null;
   nicknameChanged: boolean;
   statusPinned: boolean;
-  // Track state managed by voice/text subsystems (Steps 5-8)
+  recorder: SessionRecorder;
   notifiedUsers: Set<string>;
 }
 
@@ -162,6 +163,7 @@ export async function startSession(
     const receiver = connection.receiver;
 
     // Build runtime session state
+    const recorder = new SessionRecorder(sessionId, receiver);
     const session: ActiveSession = {
       id: sessionId,
       guildId: guild.id,
@@ -175,6 +177,7 @@ export async function startSession(
       originalNickname: null,
       nicknameChanged: false,
       statusPinned: false,
+      recorder,
       notifiedUsers: new Set(),
     };
 
@@ -190,7 +193,7 @@ export async function startSession(
         joinedAt: now.toISOString(),
       });
       session.notifiedUsers.add(vcMember.id);
-      // Audio subscription will be wired in Step 5
+      recorder.subscribeUser(vcMember.id);
     }
 
     // Recording indicator: nickname
@@ -265,7 +268,8 @@ export async function stopSession(
 
   const now = new Date();
 
-  // TODO (Step 5): Close all audio streams, finalize OGG files
+  // Close all audio streams and finalize OGG files
+  session.recorder.closeAll();
   // TODO (Step 6): Close all open speech bursts
   // TODO (Step 8): Remove text listeners
 
@@ -422,7 +426,8 @@ export async function shutdownAllSessions(client?: Client): Promise<void> {
   for (const [guildId, session] of activeSessions) {
     const now = new Date().toISOString();
 
-    // TODO (Step 5): Close all audio streams, finalize OGG files
+    // Close all audio streams and finalize OGG files
+    session.recorder.closeAll();
     // TODO (Step 6): Close all open speech bursts
 
     // Mark participants as left
