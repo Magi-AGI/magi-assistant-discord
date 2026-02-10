@@ -124,6 +124,12 @@ export function insertAudioTrack(track: {
   return Number(result.lastInsertRowid);
 }
 
+export function updateAudioTrackFilePath(trackId: number, filePath: string): void {
+  getDb()
+    .prepare('UPDATE audio_tracks SET file_path = ? WHERE id = ?')
+    .run(filePath, trackId);
+}
+
 export function setFirstPacketAt(trackId: number, firstPacketAt: string): void {
   getDb()
     .prepare('UPDATE audio_tracks SET first_packet_at = ? WHERE id = ?')

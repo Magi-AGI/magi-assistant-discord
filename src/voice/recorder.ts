@@ -6,6 +6,7 @@ import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 import {
   insertAudioTrack,
+  updateAudioTrackFilePath,
   setFirstPacketAt,
   endAudioTrack,
   getTrackCountForUser,
@@ -97,16 +98,19 @@ export class SessionRecorder {
     }
 
     const trackNumber = getTrackCountForUser(this.sessionId, userId);
-    const fileName = `${userId}_${trackNumber}.ogg`;
-    const filePath = path.join(this.sessionDir, fileName);
 
-    // Insert track record
+    // Insert track record first to get the unique trackId for filename
     const trackId = insertAudioTrack({
       sessionId: this.sessionId,
       userId,
-      filePath: path.relative(process.cwd(), filePath),
+      filePath: '', // Updated below once we know the trackId
       startedAt: new Date().toISOString(),
     });
+
+    // Use trackId in filename to avoid collisions from concurrent rejoins
+    const fileName = `${userId}_${trackNumber}_t${trackId}.ogg`;
+    const filePath = path.join(this.sessionDir, fileName);
+    updateAudioTrackFilePath(trackId, path.relative(process.cwd(), filePath));
 
     // Create OGG muxer and file write stream
     const writeStream = fs.createWriteStream(filePath);
@@ -146,7 +150,7 @@ export class SessionRecorder {
         const durationMs = getOpusFrameDurationMs(tocByte);
         if (durationMs !== 20) {
           logger.warn(
-            `Track ${track.trackId} (user ${userId}): Opus frame duration ${durationMs}ms != expected 20ms (TOC byte: 0x${tocByte.toString(16)})`
+            `Session ${this.sessionId}, track ${track.trackId} (user ${userId}): Opus frame duration ${durationMs}ms != expected 20ms (TOC byte: 0x${tocByte.toString(16)})`
           );
         }
       }
@@ -179,7 +183,11 @@ export class SessionRecorder {
     track.closed = true;
     track.stream.destroy();
     track.muxer.finalize();
-    track.writeStream.end();
+
+    // Wait for all buffered data to flush before closing the file
+    track.writeStream.end(() => {
+      logger.debug(`Track ${track.trackId}: file write stream finished`);
+    });
 
     endAudioTrack(track.trackId, new Date().toISOString());
     this.tracks.delete(userId);
@@ -191,7 +199,9 @@ export class SessionRecorder {
 
   /** Close all tracks (session stop or shutdown). */
   closeAll(): void {
-    for (const [userId] of this.tracks) {
+    // Snapshot keys since closeUserTrack modifies the map
+    const userIds = Array.from(this.tracks.keys());
+    for (const userId of userIds) {
       this.closeUserTrack(userId);
     }
   }

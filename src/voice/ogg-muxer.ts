@@ -30,6 +30,7 @@ export class OggMuxer {
   /** Write an Opus packet as an OGG page. One packet per page for frequent flushing. */
   writeOpusPacket(opusData: Buffer): void {
     if (this.finalized) return;
+    if (opusData.length === 0) return; // Skip empty packets
     this.granulePos += BigInt(this.samplesPerFrame);
     this.writePage(opusData, 0x00, this.granulePos);
   }
