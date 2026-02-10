@@ -78,6 +78,9 @@ function handleUserLeave(oldState: VoiceState): void {
   session.recorder.closeUserTrack(userId);
   markParticipantLeft(session.id, userId, now);
 
+  // Clear from notifiedUsers so they get re-subscribed and re-notified on rejoin
+  session.notifiedUsers.delete(userId);
+
   logger.info(`User left: ${displayName} (${userId}) left session ${session.id}`);
 }
 
