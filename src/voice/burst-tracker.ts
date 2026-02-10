@@ -4,7 +4,6 @@ import { logger } from '../logger.js';
 import {
   insertBurst,
   closeBurst,
-  getOpenBurst,
 } from '../db/queries.js';
 import type { SessionRecorder, UserTrack } from './recorder.js';
 

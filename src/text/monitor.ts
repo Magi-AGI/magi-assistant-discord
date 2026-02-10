@@ -8,11 +8,21 @@ import { logger } from '../logger.js';
 import { getActiveSessionForGuild } from '../session-manager.js';
 import { insertTextEvent } from '../db/queries.js';
 
+// Populated at registration time so we can skip our own bot's messages
+// while still capturing other bots (dice bots, game bots, etc.)
+let selfUserId: string | null = null;
+
 /**
  * Register text channel event listeners for message capture.
  * Captures create, edit, and delete events during active sessions.
+ * Captures all users including other bots (dice rolls, game bots),
+ * but skips this bot's own messages.
  */
 export function registerTextMonitor(client: Client): void {
+  client.once(Events.ClientReady, (readyClient) => {
+    selfUserId = readyClient.user.id;
+  });
+
   client.on(Events.MessageCreate, (message: Message) => {
     handleMessageCreate(message);
   });
@@ -26,10 +36,15 @@ export function registerTextMonitor(client: Client): void {
   });
 }
 
+/**
+ * Check if this channel is being monitored in an active session.
+ * Returns the session ID if monitored, null otherwise.
+ * If no text channels are configured, captures nothing (explicit config required).
+ */
 function isMonitoredChannel(guildId: string, channelId: string): string | null {
   const session = getActiveSessionForGuild(guildId);
   if (!session) return null;
-  if (session.textChannelIds.length === 0) return session.id; // Monitor all if none configured
+  if (session.textChannelIds.length === 0) return null;
   if (session.textChannelIds.includes(channelId)) return session.id;
   return null;
 }
@@ -39,9 +54,31 @@ function epochToIso(epochMs: number | null | undefined): string | null {
   return new Date(epochMs).toISOString();
 }
 
+/** Build content string including attachment URLs. */
+function buildContent(message: Message | PartialMessage): string | null {
+  const text = message.content ?? '';
+  const attachmentUrls: string[] = [];
+
+  if ('attachments' in message && message.attachments?.size) {
+    for (const [, attachment] of message.attachments) {
+      attachmentUrls.push(attachment.url);
+    }
+  }
+
+  if (!text && attachmentUrls.length === 0) return null;
+
+  if (attachmentUrls.length === 0) return text || null;
+  const suffix = '\n[Attachments: ' + attachmentUrls.join(', ') + ']';
+  return (text + suffix).trim() || null;
+}
+
+function isSelf(authorId: string | undefined | null): boolean {
+  return !!selfUserId && authorId === selfUserId;
+}
+
 function handleMessageCreate(message: Message): void {
   if (!message.guild) return;
-  if (message.author.bot) return;
+  if (isSelf(message.author?.id)) return;
 
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
@@ -53,7 +90,7 @@ function handleMessageCreate(message: Message): void {
     channelId: message.channelId,
     messageTimestamp: epochToIso(message.createdTimestamp),
     eventReceivedAt: new Date().toISOString(),
-    content: message.content,
+    content: buildContent(message),
     eventType: 'create',
   });
 
@@ -62,19 +99,15 @@ function handleMessageCreate(message: Message): void {
 
 function handleMessageUpdate(message: Message | PartialMessage): void {
   if (!message.guild) return;
+  if (isSelf(message.author?.id)) return;
 
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
 
-  // For partials, some fields may be unavailable
   const userId = message.author?.id ?? null;
-  const content = message.content ?? null;
   const editedTimestamp = message.editedTimestamp
     ? epochToIso(message.editedTimestamp)
     : null;
-
-  // Skip bot edits
-  if (message.author?.bot) return;
 
   insertTextEvent({
     sessionId,
@@ -83,7 +116,7 @@ function handleMessageUpdate(message: Message | PartialMessage): void {
     channelId: message.channelId,
     messageTimestamp: editedTimestamp,
     eventReceivedAt: new Date().toISOString(),
-    content,
+    content: buildContent(message),
     eventType: 'edit',
   });
 
@@ -96,7 +129,8 @@ function handleMessageDelete(message: Message | PartialMessage): void {
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
 
-  // For partials, content and author may be unavailable
+  // For deletes, don't filter by author -- we want to record all deletions.
+  // Author/content may be unavailable for uncached messages (partials).
   const userId = message.author?.id ?? null;
   const content = message.content ?? null;
 
@@ -105,7 +139,7 @@ function handleMessageDelete(message: Message | PartialMessage): void {
     messageId: message.id,
     userId,
     channelId: message.channelId,
-    messageTimestamp: null, // Discord doesn't provide a deletion timestamp
+    messageTimestamp: null,
     eventReceivedAt: new Date().toISOString(),
     content,
     eventType: 'delete',

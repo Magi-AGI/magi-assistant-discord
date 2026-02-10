@@ -275,7 +275,7 @@ export async function stopSession(
   // Close all open speech bursts, then close audio streams
   session.burstTracker.destroy();
   session.recorder.closeAll();
-  // TODO (Step 8): Remove text listeners
+  // Text monitor uses global listeners with per-session filtering; no cleanup needed.
 
   // Mark all participants as left
   const participants = getSessionParticipants(session.id);
