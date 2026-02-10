@@ -1,4 +1,4 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 import type { CommandModule } from './index';
 
 export const sessionCommand: CommandModule = {
@@ -22,5 +22,6 @@ export const sessionCommand: CommandModule = {
     .addSubcommand((sub) =>
       sub.setName('status').setDescription('Show current session status')
     )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
     .toJSON(),
 };
