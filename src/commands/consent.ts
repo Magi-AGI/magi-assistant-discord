@@ -1,5 +1,5 @@
 import { SlashCommandBuilder } from 'discord.js';
-import type { CommandModule } from './index';
+import type { CommandModule } from './index.js';
 
 export const consentCommand: CommandModule = {
   data: new SlashCommandBuilder()

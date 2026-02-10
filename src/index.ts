@@ -5,9 +5,10 @@ import {
   Events,
   type Interaction,
 } from 'discord.js';
-import { getConfig } from './config';
-import { logger } from './logger';
-import { registerCommands, getCommandMap } from './commands';
+import { getConfig } from './config.js';
+import { logger } from './logger.js';
+import { registerCommands, getCommandMap } from './commands/index.js';
+import { initDb, recoverStaleSessions, closeDb } from './db/index.js';
 
 const config = getConfig();
 
@@ -55,8 +56,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal} — starting graceful shutdown...`);
 
   try {
-    // TODO (Step 4+): Stop active sessions, finalize audio files, close DB
+    // TODO (Step 4+): Stop active sessions, finalize audio files
     client.destroy();
+    closeDb();
     logger.info('Discord client destroyed. Goodbye.');
   } catch (err) {
     logger.error('Error during shutdown:', err);
@@ -85,7 +87,9 @@ async function main(): Promise<void> {
   logger.info(`  DB path: ${config.dbPath}`);
   logger.info(`  Guilds configured: ${Object.keys(config.guilds).length}`);
 
-  // TODO (Step 3): Initialize database, run crash recovery BEFORE ready
+  // Initialize database and run crash recovery BEFORE ready event
+  initDb();
+  recoverStaleSessions();
 
   await registerCommands();
 

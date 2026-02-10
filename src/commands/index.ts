@@ -3,10 +3,10 @@ import {
   Routes,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from 'discord.js';
-import { getConfig, requireClientId } from '../config';
-import { logger } from '../logger';
-import { sessionCommand } from './session';
-import { consentCommand } from './consent';
+import { getConfig, requireClientId } from '../config.js';
+import { logger } from '../logger.js';
+import { sessionCommand } from './session.js';
+import { consentCommand } from './consent.js';
 
 export interface CommandModule {
   data: RESTPostAPIChatInputApplicationCommandsJSONBody;

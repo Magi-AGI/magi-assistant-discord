@@ -1,7 +1,7 @@
 import { config as dotenvConfig } from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AppConfig, GuildConfig } from './types';
+import type { AppConfig, GuildConfig } from './types/index.js';
 
 dotenvConfig();
 

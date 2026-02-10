@@ -1,5 +1,5 @@
 import { PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
-import type { CommandModule } from './index';
+import type { CommandModule } from './index.js';
 
 export const sessionCommand: CommandModule = {
   data: new SlashCommandBuilder()
