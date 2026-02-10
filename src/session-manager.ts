@@ -216,9 +216,11 @@ export async function startSession(
         session.originalNickname = botMember.nickname;
         await botMember.setNickname('[REC] Magi Assistant');
         session.nicknameChanged = true;
+      } else {
+        logger.warn('Could not set bot nickname: guild.members.me is null');
       }
-    } catch {
-      logger.warn('Could not set bot nickname (missing Manage Nicknames permission)');
+    } catch (err) {
+      logger.warn('Could not set bot nickname (missing Manage Nicknames permission?):', err);
     }
 
     // Recording indicator: status embed
@@ -249,6 +251,12 @@ export async function startSession(
       } catch (err) {
         logger.warn('Could not send status embed:', err);
       }
+    } else {
+      logger.warn(
+        `Could not send status embed: channel=${statusChannel?.id ?? 'null'}, ` +
+        `isTextBased=${statusChannel?.isTextBased?.() ?? 'N/A'}, ` +
+        `type=${statusChannel?.type ?? 'N/A'}`
+      );
     }
 
     const participantCount = voiceChannel.members.filter((m) => !m.user.bot).size;
