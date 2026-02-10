@@ -3,7 +3,7 @@ import {
   Routes,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
 } from 'discord.js';
-import { getConfig } from '../config';
+import { getConfig, requireClientId } from '../config';
 import { logger } from '../logger';
 import { sessionCommand } from './session';
 import { consentCommand } from './consent';
@@ -25,10 +25,11 @@ export function getCommandMap(): Map<string, CommandModule> {
 
 export async function registerCommands(): Promise<void> {
   const config = getConfig();
+  const clientId = requireClientId();
   const rest = new REST({ version: '10' }).setToken(config.discordToken);
   const body = commands.map((c) => c.data);
 
   logger.info(`Registering ${body.length} slash commands...`);
-  await rest.put(Routes.applicationCommands(config.discordClientId), { body });
+  await rest.put(Routes.applicationCommands(clientId), { body });
   logger.info('Slash commands registered.');
 }
