@@ -155,7 +155,12 @@ async function hydrateTrack(track: AudioTrackRow, outputDir: string): Promise<st
     let currentOutputBytes = 0;
     let burstsProcessed = 0;
 
-    for (const burst of bursts) {
+    // Defensive sort by burst_start (DB returns ORDER BY burst_start, but guard against changes)
+    const sortedBursts = [...bursts].sort((a, b) =>
+      new Date(a.burst_start).getTime() - new Date(b.burst_start).getTime()
+    );
+
+    for (const burst of sortedBursts) {
       const burstStartMs = new Date(burst.burst_start).getTime();
       const targetPositionS = (burstStartMs - firstPacketAt) / 1000;
       const targetPositionBytes = Math.floor(targetPositionS * BYTES_PER_SECOND);
@@ -175,6 +180,19 @@ async function hydrateTrack(track: AudioTrackRow, outputDir: string): Promise<st
       // For unclosed bursts (crash recovery), use all remaining frames
       const endFrameOffset = burst.end_frame_offset ?? totalDecodedFrames;
       const endByte = endFrameOffset * BYTES_PER_FRAME;
+
+      // Warn if burst offsets exceed decoded data (indicates tracking drift)
+      if (endFrameOffset > totalDecodedFrames) {
+        console.warn(
+          `    WARNING: burst ${burst.id} end_frame_offset (${endFrameOffset}) exceeds decoded frames (${totalDecodedFrames}) -- possible tracking drift`
+        );
+      }
+      if (burst.start_frame_offset > totalDecodedFrames) {
+        console.warn(
+          `    WARNING: burst ${burst.id} start_frame_offset (${burst.start_frame_offset}) exceeds decoded frames (${totalDecodedFrames}) -- skipping`
+        );
+        continue;
+      }
 
       // Clamp to actual file bounds
       const clampedStart = Math.min(startByte, decodedPcm.length);
@@ -248,10 +266,20 @@ async function runFfmpeg(args: string[]): Promise<void> {
   const ffmpegArgs = ['-hide_banner', '-loglevel', 'warning', ...args];
 
   if (process.platform !== 'win32') {
-    await execFileAsync('nice', ['-n', '19', 'ffmpeg', ...ffmpegArgs]);
-  } else {
-    await execFileAsync('ffmpeg', ffmpegArgs);
+    try {
+      await execFileAsync('nice', ['-n', '19', 'ffmpeg', ...ffmpegArgs]);
+      return;
+    } catch (err: unknown) {
+      // If nice itself failed (not found), fall back to direct ffmpeg.
+      // If ffmpeg failed, re-throw (nice succeeded but ffmpeg errored).
+      const msg = err instanceof Error ? err.message : '';
+      if (!msg.includes('ENOENT') && !msg.includes('nice')) {
+        throw err;
+      }
+    }
   }
+
+  await execFileAsync('ffmpeg', ffmpegArgs);
 }
 
 main().catch((err) => {
