@@ -27,6 +27,7 @@ import {
   getSessionTracks,
 } from './db/queries.js';
 import { SessionRecorder } from './voice/recorder.js';
+import { BurstTracker } from './voice/burst-tracker.js';
 
 /** Runtime state for an active recording session. */
 export interface ActiveSession {
@@ -43,6 +44,7 @@ export interface ActiveSession {
   nicknameChanged: boolean;
   statusPinned: boolean;
   recorder: SessionRecorder;
+  burstTracker: BurstTracker;
   notifiedUsers: Set<string>;
 }
 
@@ -164,6 +166,7 @@ export async function startSession(
 
     // Build runtime session state
     const recorder = new SessionRecorder(sessionId, receiver);
+    const burstTracker = new BurstTracker(sessionId, recorder, receiver);
     const session: ActiveSession = {
       id: sessionId,
       guildId: guild.id,
@@ -178,6 +181,7 @@ export async function startSession(
       nicknameChanged: false,
       statusPinned: false,
       recorder,
+      burstTracker,
       notifiedUsers: new Set(),
     };
 
@@ -268,9 +272,9 @@ export async function stopSession(
 
   const now = new Date();
 
-  // Close all audio streams and finalize OGG files
+  // Close all open speech bursts, then close audio streams
+  session.burstTracker.destroy();
   session.recorder.closeAll();
-  // TODO (Step 6): Close all open speech bursts
   // TODO (Step 8): Remove text listeners
 
   // Mark all participants as left
@@ -426,9 +430,9 @@ export async function shutdownAllSessions(client?: Client): Promise<void> {
   for (const [guildId, session] of activeSessions) {
     const now = new Date().toISOString();
 
-    // Close all audio streams and finalize OGG files
+    // Close all open speech bursts, then close audio streams
+    session.burstTracker.destroy();
     session.recorder.closeAll();
-    // TODO (Step 6): Close all open speech bursts
 
     // Mark participants as left
     const participants = getSessionParticipants(session.id);
