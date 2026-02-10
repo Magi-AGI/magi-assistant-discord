@@ -28,6 +28,8 @@ import {
 } from './db/queries.js';
 import { SessionRecorder } from './voice/recorder.js';
 import { BurstTracker } from './voice/burst-tracker.js';
+import { registerReconnectHandler } from './voice/connection.js';
+import { getEventLoopLagMs, getFreeDiskGB } from './monitoring.js';
 
 /** Runtime state for an active recording session. */
 export interface ActiveSession {
@@ -163,6 +165,12 @@ export async function startSession(
     }
 
     const receiver = connection.receiver;
+
+    // Register voice reconnection handler (exponential backoff, 3 attempts)
+    const clientRef = interaction.client;
+    registerReconnectHandler(connection, sessionId, async () => {
+      await forceEndSession(guild.id, clientRef, 'voice disconnect');
+    });
 
     // Build runtime session state
     const recorder = new SessionRecorder(sessionId, receiver);
@@ -344,18 +352,12 @@ export async function sessionStatus(
   const tracks = getSessionTracks(session.id);
 
   // Disk usage
-  let diskInfo = 'unavailable';
-  try {
-    const config = getConfig();
-    const stats = fs.statfsSync(path.resolve(config.dataDir));
-    const freeGB = (stats.bfree * stats.bsize) / (1024 * 1024 * 1024);
-    diskInfo = `${freeGB.toFixed(1)} GB free`;
-  } catch {
-    // statfsSync may not be available on all platforms
-  }
+  const freeGB = getFreeDiskGB();
+  const diskInfo = freeGB !== null ? `${freeGB.toFixed(1)} GB free` : 'unavailable';
 
-  // Event loop lag placeholder (will be wired in Step 10)
-  const lagInfo = 'monitoring not yet active';
+  // Event loop lag
+  const lagMs = getEventLoopLagMs();
+  const lagInfo = lagMs !== null ? `${lagMs.toFixed(1)}ms (p99)` : 'unavailable';
 
   const embed = new EmbedBuilder()
     .setColor(0xff0000)
@@ -458,4 +460,75 @@ export async function shutdownAllSessions(client?: Client): Promise<void> {
     logger.info(`Shutdown: stopped session ${session.id} in guild ${guildId}`);
   }
   activeSessions.clear();
+}
+
+/**
+ * Force-end a session due to unrecoverable voice disconnect.
+ * Cleans up all resources and notifies the GM via channel message.
+ */
+async function forceEndSession(guildId: string, client: Client, reason: string): Promise<void> {
+  const session = activeSessions.get(guildId);
+  if (!session) return;
+
+  const now = new Date();
+
+  // Close all open speech bursts, then close audio streams
+  session.burstTracker.destroy();
+  session.recorder.closeAll();
+
+  // Mark all participants as left
+  const participants = getSessionParticipants(session.id);
+  for (const p of participants) {
+    if (!p.left_at) {
+      markParticipantLeft(session.id, p.user_id, now.toISOString());
+    }
+  }
+
+  // Destroy voice connection (may already be destroyed)
+  try {
+    session.connection.destroy();
+  } catch {
+    // Already destroyed
+  }
+
+  // Update DB
+  endSession(session.id, now.toISOString(), 'error');
+
+  // Best-effort cleanup of Discord indicators
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    await restoreNickname(guild, session);
+    await unpinStatusMessage(guild, session);
+  } catch {
+    logger.warn(`Force-end: could not clean up indicators for guild ${guildId}`);
+  }
+
+  // Notify the GM via channel message
+  await notifyDisconnect(client, session);
+
+  // Clean up runtime state
+  activeSessions.delete(guildId);
+
+  logger.info(`Session ${session.id} force-ended: ${reason}`);
+}
+
+async function notifyDisconnect(client: Client, session: ActiveSession): Promise<void> {
+  // Try the channel where the status message was posted, then the first text channel
+  const channelId = session.statusChannelId
+    ?? (session.textChannelIds.length > 0 ? session.textChannelIds[0] : null);
+  if (!channelId) return;
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    if (channel && channel.isTextBased() && 'send' in channel) {
+      await (channel as TextChannel).send(
+        `Recording session ended due to voice disconnect.\n` +
+        `Reconnection failed after multiple attempts.\n` +
+        `**Session ID:** \`${session.id}\`\n\n` +
+        `> Raw audio files contain speech only. Run \`npm run hydrate-audio ${session.id}\` to generate listenable files.`
+      );
+    }
+  } catch {
+    logger.warn(`Could not notify about disconnect for session ${session.id}`);
+  }
 }

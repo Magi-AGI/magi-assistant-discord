@@ -12,6 +12,7 @@ import { initDb, recoverStaleSessions, closeDb } from './db/index.js';
 import { shutdownAllSessions } from './session-manager.js';
 import { registerLateJoinHandler } from './voice/late-join.js';
 import { registerTextMonitor } from './text/monitor.js';
+import { startMonitoring, stopMonitoring } from './monitoring.js';
 
 const config = getConfig();
 
@@ -57,6 +58,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   try {
     await shutdownAllSessions(client);
+    stopMonitoring();
     client.destroy();
     closeDb();
     logger.info('Discord client destroyed. Goodbye.');
@@ -94,6 +96,7 @@ async function main(): Promise<void> {
   await registerCommands();
   registerLateJoinHandler(client);
   registerTextMonitor(client);
+  startMonitoring();
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`Bot online as ${readyClient.user.tag}`);
