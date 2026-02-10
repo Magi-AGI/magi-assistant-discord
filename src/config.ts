@@ -67,8 +67,8 @@ export function getConfig(): AppConfig {
   }
 
   _config = {
-    discordToken: requireEnv('DISCORD_TOKEN'),
-    // Lazy: only fails when accessed, not at load time
+    // Lazy: scripts like hydrate-audio only need dataDir/dbPath, not tokens
+    discordToken: process.env.DISCORD_TOKEN ?? '',
     discordClientId: process.env.DISCORD_CLIENT_ID ?? '',
     dataDir: typeof file.dataDir === 'string' ? file.dataDir : './data/sessions',
     dbPath: typeof file.dbPath === 'string' ? file.dbPath : './data/bot.sqlite',
@@ -79,6 +79,17 @@ export function getConfig(): AppConfig {
   };
 
   return _config;
+}
+
+/** Require DISCORD_TOKEN — call this only when the bot is connecting. */
+export function requireDiscordToken(): string {
+  const config = getConfig();
+  if (!config.discordToken) {
+    throw new Error(
+      'Missing DISCORD_TOKEN environment variable (required for bot login)'
+    );
+  }
+  return config.discordToken;
 }
 
 /** Require DISCORD_CLIENT_ID — call this only when command registration is needed. */

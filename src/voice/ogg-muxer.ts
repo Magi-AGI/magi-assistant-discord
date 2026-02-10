@@ -63,7 +63,8 @@ export class OggMuxer {
     const vendor = 'magi-assistant-discord';
     const vendorBuf = Buffer.from(vendor, 'utf-8');
 
-    const comment = Buffer.alloc(8 + vendorBuf.length + 4);
+    // Layout: "OpusTags" (8) + vendor length (4) + vendor string + comment count (4)
+    const comment = Buffer.alloc(8 + 4 + vendorBuf.length + 4);
     comment.write('OpusTags', 0, 8, 'ascii');
     comment.writeUInt32LE(vendorBuf.length, 8);
     vendorBuf.copy(comment, 12);

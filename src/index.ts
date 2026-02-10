@@ -5,7 +5,7 @@ import {
   Events,
   type Interaction,
 } from 'discord.js';
-import { getConfig } from './config.js';
+import { getConfig, requireDiscordToken } from './config.js';
 import { logger } from './logger.js';
 import { registerCommands, getCommandMap } from './commands/index.js';
 import { initDb, recoverStaleSessions, closeDb } from './db/index.js';
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
     logger.info(`Bot online as ${readyClient.user.tag}`);
   });
 
-  await client.login(config.discordToken);
+  await client.login(requireDiscordToken());
 }
 
 main().catch((err) => {

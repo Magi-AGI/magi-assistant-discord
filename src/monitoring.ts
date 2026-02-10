@@ -5,6 +5,7 @@ import { getConfig } from './config.js';
 import { logger } from './logger.js';
 
 let histogram: IntervalHistogram | null = null;
+let lagCheckInterval: ReturnType<typeof setInterval> | null = null;
 let diskCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
@@ -20,7 +21,7 @@ export function startMonitoring(): void {
   histogram.enable();
 
   // Periodic check for event loop lag
-  setInterval(() => {
+  lagCheckInterval = setInterval(() => {
     if (!histogram) return;
     const p99Ms = histogram.percentile(99) / 1e6; // nanoseconds -> ms
     if (p99Ms > config.eventLoopLagThresholdMs) {
@@ -82,6 +83,10 @@ export function stopMonitoring(): void {
   if (histogram) {
     histogram.disable();
     histogram = null;
+  }
+  if (lagCheckInterval) {
+    clearInterval(lagCheckInterval);
+    lagCheckInterval = null;
   }
   if (diskCheckInterval) {
     clearInterval(diskCheckInterval);
