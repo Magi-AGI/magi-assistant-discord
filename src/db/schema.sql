@@ -1,3 +1,5 @@
+-- REFERENCE ONLY -- Source of truth is SCHEMA_V1 in src/db/index.ts
+-- This file exists for human readability. Do not assume it is in sync.
 -- user_version = 1
 
 CREATE TABLE sessions (

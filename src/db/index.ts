@@ -28,9 +28,10 @@ export function initDb(): Database.Database {
 
   _db = new Database(config.dbPath);
 
-  // WAL mode — critical for concurrent reads/writes without blocking event loop
+  // WAL mode -- critical for concurrent reads/writes without blocking event loop
   _db.pragma('journal_mode = WAL');
   _db.pragma('busy_timeout = 5000');
+  _db.pragma('foreign_keys = ON');
 
   // Run migrations
   migrate(_db);
@@ -43,7 +44,7 @@ function migrate(db: Database.Database): void {
   const currentVersion = db.pragma('user_version', { simple: true }) as number;
 
   if (currentVersion < 1) {
-    logger.info('Running migration: version 0 → 1 (initial schema)');
+    logger.info('Running migration: version 0 -> 1 (initial schema)');
     db.exec(SCHEMA_V1);
     db.pragma('user_version = 1');
   }
@@ -54,10 +55,13 @@ function migrate(db: Database.Database): void {
 
 /**
  * Crash recovery: mark any sessions left in 'active' status as 'error'.
- * Must run BEFORE the bot emits 'ready' and registers command handlers.
+ * Must be called AFTER initDb() and BEFORE the client emits 'ready'.
  */
 export function recoverStaleSessions(): void {
-  const db = getDb();
+  if (!_db) {
+    throw new Error('recoverStaleSessions() called before initDb()');
+  }
+  const db = _db;
   const stale = db
     .prepare("SELECT id FROM sessions WHERE status = 'active'")
     .all() as { id: string }[];
@@ -135,6 +139,7 @@ CREATE TABLE audio_speech_bursts (
 );
 
 CREATE INDEX idx_audio_speech_bursts_track ON audio_speech_bursts(track_id);
+CREATE UNIQUE INDEX idx_audio_speech_bursts_one_open ON audio_speech_bursts(track_id) WHERE burst_end IS NULL;
 
 CREATE TABLE text_events (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -257,20 +257,15 @@ export function getConsent(guildId: string, userId: string): ConsentRow | undefi
 }
 
 export function upsertConsent(guildId: string, userId: string, consented: boolean): void {
+  const now = new Date().toISOString();
+  const value = consented ? 1 : 0;
   getDb()
     .prepare(
       `INSERT INTO consent (guild_id, user_id, consented, updated_at)
        VALUES (?, ?, ?, ?)
        ON CONFLICT(guild_id, user_id) DO UPDATE SET consented = ?, updated_at = ?`
     )
-    .run(
-      guildId,
-      userId,
-      consented ? 1 : 0,
-      new Date().toISOString(),
-      consented ? 1 : 0,
-      new Date().toISOString()
-    );
+    .run(guildId, userId, value, now, value, now);
 }
 
 // --- Guild settings queries ---
