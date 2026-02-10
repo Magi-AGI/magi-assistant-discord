@@ -54,7 +54,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal} -- starting graceful shutdown...`);
 
   try {
-    await shutdownAllSessions();
+    await shutdownAllSessions(client);
     client.destroy();
     closeDb();
     logger.info('Discord client destroyed. Goodbye.');

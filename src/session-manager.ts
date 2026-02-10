@@ -3,15 +3,12 @@ import {
   type VoiceReceiver,
   VoiceConnectionStatus,
   entersState,
-  getVoiceConnection,
   joinVoiceChannel,
 } from '@discordjs/voice';
 import {
   type ChatInputCommandInteraction,
-  type GuildMember,
-  type Message,
+  type Client,
   type TextChannel,
-  type VoiceChannel,
   ChannelType,
   EmbedBuilder,
 } from 'discord.js';
@@ -51,6 +48,9 @@ export interface ActiveSession {
 // One active session per guild
 const activeSessions = new Map<string, ActiveSession>();
 
+// Per-guild lock to prevent concurrent /session start races
+const startLocks = new Set<string>();
+
 export function getActiveSessionForGuild(guildId: string): ActiveSession | undefined {
   return activeSessions.get(guildId);
 }
@@ -69,7 +69,17 @@ export async function startSession(
     return;
   }
 
-  const member = interaction.member as GuildMember;
+  // Per-guild lock to prevent concurrent start races
+  if (startLocks.has(guild.id)) {
+    await interaction.reply({
+      content: 'A session start is already in progress. Please wait.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  // Fetch the full GuildMember to ensure voice state is populated
+  const member = await guild.members.fetch(interaction.user.id);
   const voiceChannel = member.voice.channel;
   if (!voiceChannel || voiceChannel.type !== ChannelType.GuildVoice) {
     await interaction.reply({
@@ -98,136 +108,142 @@ export async function startSession(
     return;
   }
 
-  await interaction.deferReply();
-
-  const config = getConfig();
-  const guildConfig = config.guilds[guild.id];
-
-  // Determine text channels to monitor
-  const textChannelIds: string[] = channelOverride
-    ? [channelOverride.id]
-    : (guildConfig?.textChannels ?? []);
-
-  const sessionId = uuidv4();
-  const now = new Date();
-  const timezone = guildConfig?.timezone ?? 'UTC';
-
-  // Create session directory
-  const sessionDir = path.resolve(config.dataDir, sessionId);
-  if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-  }
-
-  // Insert session record
-  insertSession({
-    id: sessionId,
-    guildId: guild.id,
-    voiceChannelId: voiceChannel.id,
-    textChannelIds,
-    timezone,
-    startedAt: now.toISOString(),
-  });
-
-  // Join voice channel
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
-    guildId: guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: true,
-  });
+  startLocks.add(guild.id);
 
   try {
-    await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-  } catch {
-    connection.destroy();
-    endSession(sessionId, new Date().toISOString(), 'error');
-    await interaction.editReply('Failed to join voice channel (timeout).');
-    return;
-  }
+    await interaction.deferReply();
 
-  const receiver = connection.receiver;
+    const config = getConfig();
+    const guildConfig = config.guilds[guild.id];
 
-  // Build runtime session state
-  const session: ActiveSession = {
-    id: sessionId,
-    guildId: guild.id,
-    voiceChannelId: voiceChannel.id,
-    textChannelIds,
-    connection,
-    receiver,
-    startedAt: now,
-    statusMessageId: null,
-    statusChannelId: null,
-    originalNickname: null,
-    nicknameChanged: false,
-    statusPinned: false,
-    notifiedUsers: new Set(),
-  };
+    // Determine text channels to monitor
+    const textChannelIds: string[] = channelOverride
+      ? [channelOverride.id]
+      : (guildConfig?.textChannels ?? []);
 
-  activeSessions.set(guild.id, session);
+    const sessionId = uuidv4();
+    const now = new Date();
+    const timezone = guildConfig?.timezone ?? 'UTC';
 
-  // Log initial participants
-  for (const [, vcMember] of voiceChannel.members) {
-    if (vcMember.user.bot) continue;
-    insertParticipant({
-      sessionId,
-      userId: vcMember.id,
-      displayName: vcMember.displayName,
-      joinedAt: now.toISOString(),
+    // Create session directory
+    const sessionDir = path.resolve(config.dataDir, sessionId);
+    if (!fs.existsSync(sessionDir)) {
+      fs.mkdirSync(sessionDir, { recursive: true });
+    }
+
+    // Insert session record
+    insertSession({
+      id: sessionId,
+      guildId: guild.id,
+      voiceChannelId: voiceChannel.id,
+      textChannelIds,
+      timezone,
+      startedAt: now.toISOString(),
     });
-    session.notifiedUsers.add(vcMember.id);
-    // Audio subscription will be wired in Step 5
-  }
 
-  // Recording indicator: nickname
-  try {
-    const botMember = guild.members.me;
-    if (botMember) {
-      session.originalNickname = botMember.nickname;
-      await botMember.setNickname('[REC] Magi Assistant');
-      session.nicknameChanged = true;
-    }
-  } catch {
-    logger.warn('Could not set bot nickname (missing Manage Nicknames permission)');
-  }
+    // Join voice channel
+    const connection = joinVoiceChannel({
+      channelId: voiceChannel.id,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: false,
+      selfMute: true,
+    });
 
-  // Recording indicator: status embed
-  const statusEmbed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle('\u{1f534} Recording session in progress')
-    .addFields(
-      { name: 'Session ID', value: sessionId, inline: true },
-      { name: 'Started', value: `<t:${Math.floor(now.getTime() / 1000)}:F>`, inline: true },
-      { name: 'Voice Channel', value: voiceChannel.name, inline: true }
-    )
-    .setTimestamp();
-
-  const statusChannel = interaction.channel;
-  if (statusChannel && 'send' in statusChannel) {
     try {
-      const statusMsg = await (statusChannel as TextChannel).send({ embeds: [statusEmbed] });
-      session.statusMessageId = statusMsg.id;
-      session.statusChannelId = statusChannel.id;
-
-      // Try to pin
-      try {
-        await statusMsg.pin();
-        session.statusPinned = true;
-      } catch {
-        logger.warn('Could not pin status message (missing Manage Messages permission)');
-      }
-    } catch (err) {
-      logger.warn('Could not send status embed:', err);
+      await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
+    } catch {
+      connection.destroy();
+      endSession(sessionId, new Date().toISOString(), 'error');
+      await interaction.editReply('Failed to join voice channel (timeout).');
+      return;
     }
+
+    const receiver = connection.receiver;
+
+    // Build runtime session state
+    const session: ActiveSession = {
+      id: sessionId,
+      guildId: guild.id,
+      voiceChannelId: voiceChannel.id,
+      textChannelIds,
+      connection,
+      receiver,
+      startedAt: now,
+      statusMessageId: null,
+      statusChannelId: null,
+      originalNickname: null,
+      nicknameChanged: false,
+      statusPinned: false,
+      notifiedUsers: new Set(),
+    };
+
+    activeSessions.set(guild.id, session);
+
+    // Log initial participants
+    for (const [, vcMember] of voiceChannel.members) {
+      if (vcMember.user.bot) continue;
+      insertParticipant({
+        sessionId,
+        userId: vcMember.id,
+        displayName: vcMember.displayName,
+        joinedAt: now.toISOString(),
+      });
+      session.notifiedUsers.add(vcMember.id);
+      // Audio subscription will be wired in Step 5
+    }
+
+    // Recording indicator: nickname
+    try {
+      const botMember = guild.members.me;
+      if (botMember) {
+        session.originalNickname = botMember.nickname;
+        await botMember.setNickname('[REC] Magi Assistant');
+        session.nicknameChanged = true;
+      }
+    } catch {
+      logger.warn('Could not set bot nickname (missing Manage Nicknames permission)');
+    }
+
+    // Recording indicator: status embed
+    const statusEmbed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle('\u{1f534} Recording session in progress')
+      .addFields(
+        { name: 'Session ID', value: sessionId, inline: true },
+        { name: 'Started', value: `<t:${Math.floor(now.getTime() / 1000)}:F>`, inline: true },
+        { name: 'Voice Channel', value: voiceChannel.name, inline: true }
+      )
+      .setTimestamp();
+
+    const statusChannel = interaction.channel;
+    if (statusChannel && statusChannel.isTextBased() && 'send' in statusChannel) {
+      try {
+        const statusMsg = await (statusChannel as TextChannel).send({ embeds: [statusEmbed] });
+        session.statusMessageId = statusMsg.id;
+        session.statusChannelId = statusChannel.id;
+
+        // Try to pin
+        try {
+          await statusMsg.pin();
+          session.statusPinned = true;
+        } catch {
+          logger.warn('Could not pin status message (missing Manage Messages permission)');
+        }
+      } catch (err) {
+        logger.warn('Could not send status embed:', err);
+      }
+    }
+
+    const participantCount = voiceChannel.members.filter((m) => !m.user.bot).size;
+    await interaction.editReply(
+      `Recording session started in **${voiceChannel.name}** with ${participantCount} participant(s).\nSession ID: \`${sessionId}\``
+    );
+
+    logger.info(`Session ${sessionId} started in guild ${guild.id}, voice channel ${voiceChannel.name}`);
+  } finally {
+    startLocks.delete(guild.id);
   }
-
-  const participantCount = voiceChannel.members.filter((m) => !m.user.bot).size;
-  await interaction.editReply(
-    `Recording session started in **${voiceChannel.name}** with ${participantCount} participant(s).\nSession ID: \`${sessionId}\``
-  );
-
-  logger.info(`Session ${sessionId} started in guild ${guild.id}, voice channel ${voiceChannel.name}`);
 }
 
 export async function stopSession(
@@ -268,29 +284,10 @@ export async function stopSession(
   endSession(session.id, now.toISOString(), 'stopped');
 
   // Restore nickname
-  if (session.nicknameChanged) {
-    try {
-      const botMember = guild.members.me;
-      if (botMember) {
-        await botMember.setNickname(session.originalNickname);
-      }
-    } catch {
-      logger.warn('Could not restore bot nickname');
-    }
-  }
+  await restoreNickname(guild, session);
 
   // Unpin status message
-  if (session.statusPinned && session.statusMessageId && session.statusChannelId) {
-    try {
-      const ch = guild.channels.cache.get(session.statusChannelId) as TextChannel | undefined;
-      if (ch) {
-        const msg = await ch.messages.fetch(session.statusMessageId);
-        await msg.unpin();
-      }
-    } catch {
-      logger.warn('Could not unpin status message');
-    }
-  }
+  await unpinStatusMessage(guild, session);
 
   // Clean up runtime state
   activeSessions.delete(guild.id);
@@ -368,6 +365,8 @@ export async function sessionStatus(
   await interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
+// --- Helpers ---
+
 function formatDuration(ms: number): string {
   const seconds = Math.floor(ms / 1000);
   const h = Math.floor(seconds / 3600);
@@ -383,10 +382,43 @@ function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
+async function restoreNickname(
+  guild: import('discord.js').Guild,
+  session: ActiveSession
+): Promise<void> {
+  if (!session.nicknameChanged) return;
+  try {
+    const botMember = guild.members.me;
+    if (botMember) {
+      await botMember.setNickname(session.originalNickname);
+    }
+  } catch {
+    logger.warn('Could not restore bot nickname');
+  }
+}
+
+async function unpinStatusMessage(
+  guild: import('discord.js').Guild,
+  session: ActiveSession
+): Promise<void> {
+  if (!session.statusPinned || !session.statusMessageId || !session.statusChannelId) return;
+  try {
+    const ch = await guild.channels.fetch(session.statusChannelId);
+    if (ch && ch.isTextBased()) {
+      const textCh = ch as TextChannel;
+      const msg = await textCh.messages.fetch(session.statusMessageId);
+      await msg.unpin();
+    }
+  } catch {
+    logger.warn('Could not unpin status message');
+  }
+}
+
 /**
  * Called during graceful shutdown to cleanly stop all active sessions.
+ * Best-effort: restores nicknames and unpins status messages.
  */
-export async function shutdownAllSessions(): Promise<void> {
+export async function shutdownAllSessions(client?: Client): Promise<void> {
   for (const [guildId, session] of activeSessions) {
     const now = new Date().toISOString();
 
@@ -398,6 +430,17 @@ export async function shutdownAllSessions(): Promise<void> {
     for (const p of participants) {
       if (!p.left_at) {
         markParticipantLeft(session.id, p.user_id, now);
+      }
+    }
+
+    // Best-effort cleanup of Discord indicators
+    if (client) {
+      try {
+        const guild = await client.guilds.fetch(guildId);
+        await restoreNickname(guild, session);
+        await unpinStatusMessage(guild, session);
+      } catch {
+        logger.warn(`Shutdown: could not clean up indicators for guild ${guildId}`);
       }
     }
 
