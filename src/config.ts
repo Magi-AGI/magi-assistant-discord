@@ -1,7 +1,8 @@
 import { config as dotenvConfig } from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AppConfig, GuildConfig } from './types/index.js';
+import type { AppConfig, GuildConfig, SttConfig, DataRetentionConfig } from './types/index.js';
+import { registerSecret } from './logger.js';
 
 dotenvConfig();
 
@@ -66,6 +67,9 @@ export function getConfig(): AppConfig {
     guilds[guildId] = validateGuild(guildId, guildData);
   }
 
+  const stt = parseSttConfig((file.stt ?? {}) as Record<string, unknown>);
+  const dataRetention = parseDataRetentionConfig((file.dataRetention ?? {}) as Record<string, unknown>);
+
   _config = {
     // Lazy: scripts like hydrate-audio only need dataDir/dbPath, not tokens
     discordToken: process.env.DISCORD_TOKEN ?? '',
@@ -76,9 +80,60 @@ export function getConfig(): AppConfig {
     eventLoopLagThresholdMs: validatePositiveNumber(file.eventLoopLagThresholdMs, 'eventLoopLagThresholdMs', 100),
     maxBurstDurationMinutes: validatePositiveNumber(file.maxBurstDurationMinutes, 'maxBurstDurationMinutes', 10),
     guilds,
+    stt,
+    dataRetention,
+    mcpAuthToken: process.env.MCP_AUTH_TOKEN ?? '',
+    mcpSocketPath: typeof file.mcpSocketPath === 'string' ? file.mcpSocketPath : '',
   };
 
+  // Register secrets for log redaction
+  if (_config.mcpAuthToken) registerSecret(_config.mcpAuthToken);
+
   return _config;
+}
+
+function parseSttConfig(raw: Record<string, unknown>): SttConfig {
+  const gc = (raw.googleCloud ?? {}) as Record<string, unknown>;
+  const diar = (raw.diarization ?? {}) as Record<string, unknown>;
+  const wh = (raw.whisper ?? {}) as Record<string, unknown>;
+  return {
+    enabled: raw.enabled === true,
+    engine: (['google-cloud-stt', 'whisper', 'gemini'].includes(raw.engine as string)
+      ? raw.engine as SttConfig['engine']
+      : 'google-cloud-stt'),
+    googleCloud: {
+      projectId: typeof gc.projectId === 'string' ? gc.projectId : '',
+      keyFile: typeof gc.keyFile === 'string' ? gc.keyFile : '',
+      model: typeof gc.model === 'string' ? gc.model : 'latest_long',
+      languageCode: typeof gc.languageCode === 'string' ? gc.languageCode : 'en-US',
+      enableAutomaticPunctuation: gc.enableAutomaticPunctuation !== false,
+      sampleRateHertz: validatePositiveNumber(gc.sampleRateHertz, 'stt.googleCloud.sampleRateHertz', 16000),
+      streamRotationMinutes: validatePositiveNumber(gc.streamRotationMinutes, 'stt.googleCloud.streamRotationMinutes', 4),
+      streamOverlapSeconds: validatePositiveNumber(gc.streamOverlapSeconds, 'stt.googleCloud.streamOverlapSeconds', 5),
+    },
+    diarization: {
+      minSpeakers: validatePositiveNumber(diar.minSpeakers, 'stt.diarization.minSpeakers', 2),
+      maxSpeakers: validatePositiveNumber(diar.maxSpeakers, 'stt.diarization.maxSpeakers', 6),
+    },
+    silenceTimeoutSeconds: validatePositiveNumber(raw.silenceTimeoutSeconds, 'stt.silenceTimeoutSeconds', 5),
+    connectionCooldownSeconds: validatePositiveNumber(raw.connectionCooldownSeconds, 'stt.connectionCooldownSeconds', 2),
+    whisper: {
+      modelPath: typeof wh.modelPath === 'string' ? wh.modelPath : '',
+      language: typeof wh.language === 'string' ? wh.language : 'en',
+    },
+    costWarningPerSessionUsd: validatePositiveNumber(raw.costWarningPerSessionUsd, 'stt.costWarningPerSessionUsd', 5.0),
+    maxConcurrentStreams: validatePositiveNumber(raw.maxConcurrentStreams, 'stt.maxConcurrentStreams', 8),
+    interimThrottlePerSecond: validatePositiveNumber(raw.interimThrottlePerSecond, 'stt.interimThrottlePerSecond', 2),
+  };
+}
+
+function parseDataRetentionConfig(raw: Record<string, unknown>): DataRetentionConfig {
+  return {
+    sessionRetentionDays: typeof raw.sessionRetentionDays === 'number' && raw.sessionRetentionDays > 0
+      ? raw.sessionRetentionDays : 0,
+    autoDeleteAudioFiles: raw.autoDeleteAudioFiles === true,
+    enablePurgeCommand: raw.enablePurgeCommand === true,
+  };
 }
 
 /** Require DISCORD_TOKEN — call this only when the bot is connecting. */

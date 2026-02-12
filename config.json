@@ -10,5 +10,37 @@
       "gmRoleId": "ROLE_ID_HERE",
       "timezone": "America/New_York"
     }
+  },
+  "stt": {
+    "enabled": false,
+    "engine": "google-cloud-stt",
+    "googleCloud": {
+      "projectId": "",
+      "keyFile": "",
+      "model": "latest_long",
+      "languageCode": "en-US",
+      "enableAutomaticPunctuation": true,
+      "sampleRateHertz": 16000,
+      "streamRotationMinutes": 4,
+      "streamOverlapSeconds": 5
+    },
+    "diarization": {
+      "minSpeakers": 2,
+      "maxSpeakers": 6
+    },
+    "silenceTimeoutSeconds": 5,
+    "connectionCooldownSeconds": 2,
+    "whisper": {
+      "modelPath": "",
+      "language": "en"
+    },
+    "costWarningPerSessionUsd": 5.0,
+    "maxConcurrentStreams": 8,
+    "interimThrottlePerSecond": 2
+  },
+  "dataRetention": {
+    "sessionRetentionDays": 0,
+    "autoDeleteAudioFiles": false,
+    "enablePurgeCommand": false
   }
 }

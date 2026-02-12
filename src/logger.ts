@@ -3,15 +3,37 @@
  *
  * Discord bot tokens match: [\w-]{24}.[\w-]{6}.[\w-]{27,}
  * JS error objects from discord.js can dump Authorization headers — this catches those.
+ *
+ * Uses util.inspect instead of JSON.stringify to safely handle circular references
+ * (common in discord.js objects like Guild, Channel, Message).
  */
+
+import { inspect } from 'util';
 
 const TOKEN_PATTERN = /[\w-]{24}\.[\w-]{6}\.[\w-]{27,}/g;
 const AUTHORIZATION_HEADER_PATTERN = /(?<=Authorization:\s*(?:Bot\s+)?)\S+/gi;
 
+// Dynamic secret redaction (for MCP_AUTH_TOKEN, etc.)
+const secretFragments: string[] = [];
+let secretPattern: RegExp | null = null;
+
+/** Register a secret value so it is redacted from all log output. */
+export function registerSecret(secret: string): void {
+  // Only redact strings long enough to be meaningful (avoid redacting common short words)
+  if (secret && secret.length >= 8) {
+    secretFragments.push(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    secretPattern = new RegExp(secretFragments.join('|'), 'g');
+  }
+}
+
 function sanitize(message: string): string {
-  return message
+  let result = message
     .replace(TOKEN_PATTERN, '[REDACTED_TOKEN]')
     .replace(AUTHORIZATION_HEADER_PATTERN, '[REDACTED]');
+  if (secretPattern) {
+    result = result.replace(secretPattern, '[REDACTED]');
+  }
+  return result;
 }
 
 function formatArgs(args: unknown[]): string {
@@ -24,11 +46,10 @@ function formatArgs(args: unknown[]): string {
       if (typeof arg === 'string') {
         return sanitize(arg);
       }
-      try {
-        return sanitize(JSON.stringify(arg));
-      } catch {
-        return sanitize(String(arg));
-      }
+      // util.inspect handles circular references natively (outputs [Circular *N])
+      // and produces useful output for discord.js objects, unlike String() which
+      // gives "[object Object]"
+      return sanitize(inspect(arg, { depth: 3, breakLength: Infinity }));
     })
     .join(' ');
 }

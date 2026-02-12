@@ -29,6 +29,10 @@ export class BurstTracker {
   private maxBurstMs: number;
   private destroyed = false;
 
+  /** Bound speaking handlers — stored for targeted removal in destroy(). */
+  private boundOnStart: (userId: string) => void;
+  private boundOnEnd: (userId: string) => void;
+
   constructor(sessionId: string, recorder: SessionRecorder, receiver: VoiceReceiver) {
     this.sessionId = sessionId;
     this.recorder = recorder;
@@ -37,20 +41,18 @@ export class BurstTracker {
     const config = getConfig();
     this.maxBurstMs = config.maxBurstDurationMinutes * 60 * 1000;
 
-    this.setupSpeakingListener();
-  }
-
-  private setupSpeakingListener(): void {
-    // The 'speaking' event fires with a bitfield when a user starts/stops transmitting
-    this.receiver.speaking.on('start', (userId: string) => {
+    // Bind handlers so we can remove them specifically in destroy()
+    this.boundOnStart = (userId: string) => {
       if (this.destroyed) return;
       this.onSpeakingStart(userId);
-    });
-
-    this.receiver.speaking.on('end', (userId: string) => {
+    };
+    this.boundOnEnd = (userId: string) => {
       if (this.destroyed) return;
       this.onSpeakingEnd(userId);
-    });
+    };
+
+    this.receiver.speaking.on('start', this.boundOnStart);
+    this.receiver.speaking.on('end', this.boundOnEnd);
   }
 
   private onSpeakingStart(userId: string): void {
@@ -124,6 +126,7 @@ export class BurstTracker {
    * No gap between close and reopen -- the user may be genuinely mid-speech.
    */
   private maxDurationGuard(userId: string): void {
+    if (this.destroyed) return;
     const state = this.bursts.get(userId);
     if (!state) return;
 
@@ -171,6 +174,8 @@ export class BurstTracker {
   destroy(): void {
     this.destroyed = true;
     this.closeAll();
-    this.receiver.speaking.removeAllListeners();
+    // Remove only our own listeners — other components (SttProcessor) may share receiver.speaking
+    this.receiver.speaking.off('start', this.boundOnStart);
+    this.receiver.speaking.off('end', this.boundOnEnd);
   }
 }

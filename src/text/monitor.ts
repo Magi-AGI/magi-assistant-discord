@@ -6,7 +6,7 @@ import {
 } from 'discord.js';
 import { logger } from '../logger.js';
 import { getActiveSessionForGuild } from '../session-manager.js';
-import { insertTextEvent } from '../db/queries.js';
+import { insertTextEvent, isConsentRequired, getConsent } from '../db/queries.js';
 
 // Populated at registration time so we can skip our own bot's messages
 // while still capturing other bots (dice bots, game bots, etc.)
@@ -83,6 +83,12 @@ function handleMessageCreate(message: Message): void {
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
 
+  // Consent gate: skip if user hasn't consented and consent is required
+  if (message.author && isConsentRequired(message.guild.id)) {
+    const consent = getConsent(message.guild.id, message.author.id);
+    if (!consent || consent.consented !== 1) return;
+  }
+
   insertTextEvent({
     sessionId,
     messageId: message.id,
@@ -103,6 +109,12 @@ function handleMessageUpdate(message: Message | PartialMessage): void {
 
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
+
+  // Consent gate
+  if (message.author && isConsentRequired(message.guild.id)) {
+    const consent = getConsent(message.guild.id, message.author.id);
+    if (!consent || consent.consented !== 1) return;
+  }
 
   const userId = message.author?.id ?? null;
   const editedTimestamp = message.editedTimestamp
@@ -129,8 +141,14 @@ function handleMessageDelete(message: Message | PartialMessage): void {
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
 
-  // For deletes, don't filter by author -- we want to record all deletions.
-  // Author/content may be unavailable for uncached messages (partials).
+  // Consent gate: if author is known and consent is required, skip non-consented users.
+  // For uncached partials where author is unknown, we record the deletion event
+  // with userId=null (no PII captured).
+  if (message.author && isConsentRequired(message.guild.id)) {
+    const consent = getConsent(message.guild.id, message.author.id);
+    if (!consent || consent.consented !== 1) return;
+  }
+
   const userId = message.author?.id ?? null;
   const content = message.content ?? null;
 

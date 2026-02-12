@@ -4,7 +4,7 @@ import * as path from 'path';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 4;
 
 let _db: Database.Database | null = null;
 
@@ -30,6 +30,8 @@ export function initDb(): Database.Database {
 
   // WAL mode -- critical for concurrent reads/writes without blocking event loop
   _db.pragma('journal_mode = WAL');
+  // NORMAL sync is safe with WAL and avoids blocking fsync on every checkpoint
+  _db.pragma('synchronous = NORMAL');
   _db.pragma('busy_timeout = 5000');
   _db.pragma('foreign_keys = ON');
 
@@ -49,8 +51,23 @@ function migrate(db: Database.Database): void {
     db.pragma('user_version = 1');
   }
 
-  // Future migrations go here:
-  // if (currentVersion < 2) { ... db.pragma('user_version = 2'); }
+  if (currentVersion < 2) {
+    logger.info('Running migration: version 1 -> 2 (transcription + STT)');
+    db.exec(SCHEMA_V2);
+    db.pragma('user_version = 2');
+  }
+
+  if (currentVersion < 3) {
+    logger.info('Running migration: version 2 -> 3 (performance indexes)');
+    db.exec(SCHEMA_V3);
+    db.pragma('user_version = 3');
+  }
+
+  if (currentVersion < 4) {
+    logger.info('Running migration: version 3 -> 4 (UPSERT key includes track_id)');
+    db.exec(SCHEMA_V4);
+    db.pragma('user_version = 4');
+  }
 }
 
 /**
@@ -171,4 +188,75 @@ CREATE TABLE guild_settings (
     timezone            TEXT NOT NULL DEFAULT 'UTC',
     text_channels       TEXT
 );
+`;
+
+const SCHEMA_V2 = `
+-- transcript_segments
+CREATE TABLE transcript_segments (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES sessions(id),
+    track_id            INTEGER NOT NULL REFERENCES audio_tracks(id),
+    burst_id            INTEGER REFERENCES audio_speech_bursts(id),
+    user_id             TEXT NOT NULL,
+    display_name        TEXT,
+    speaker_label       TEXT,
+    segment_start       TEXT NOT NULL,
+    segment_end         TEXT,
+    transcript          TEXT NOT NULL,
+    confidence          REAL,
+    language            TEXT DEFAULT 'en',
+    is_final            INTEGER NOT NULL DEFAULT 0,
+    stt_result_id       TEXT,
+    stream_sequence     INTEGER DEFAULT 0,
+    stt_engine          TEXT NOT NULL,
+    stt_model           TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT
+);
+CREATE INDEX idx_transcript_session ON transcript_segments(session_id);
+CREATE INDEX idx_transcript_session_time ON transcript_segments(session_id, segment_start);
+CREATE INDEX idx_transcript_burst ON transcript_segments(burst_id);
+CREATE UNIQUE INDEX idx_transcript_stt_result
+    ON transcript_segments(session_id, user_id, stream_sequence, stt_result_id)
+    WHERE stt_result_id IS NOT NULL;
+
+-- speaker_mappings (diarized mode)
+CREATE TABLE speaker_mappings (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES sessions(id),
+    speaker_label       TEXT NOT NULL,
+    player_name         TEXT NOT NULL,
+    mapped_at           TEXT NOT NULL,
+    mapped_by           TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_speaker_mapping ON speaker_mappings(session_id, speaker_label);
+
+-- stt_usage (billing/audit)
+CREATE TABLE stt_usage (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT NOT NULL REFERENCES sessions(id),
+    engine              TEXT NOT NULL,
+    audio_duration_ms   INTEGER NOT NULL,
+    segment_count       INTEGER NOT NULL,
+    estimated_cost_usd  REAL,
+    created_at          TEXT NOT NULL
+);
+
+-- ALTER TABLE additions
+ALTER TABLE audio_tracks ADD COLUMN stt_status TEXT DEFAULT 'pending';
+ALTER TABLE audio_tracks ADD COLUMN stt_mode TEXT DEFAULT 'per-user';
+`;
+
+const SCHEMA_V3 = `
+CREATE INDEX IF NOT EXISTS idx_sessions_active ON sessions(guild_id, status);
+`;
+
+const SCHEMA_V4 = `
+-- Fix UPSERT key collision on user rejoin: stream_sequence resets per new VadGate,
+-- so (session_id, user_id, stream_sequence, stt_result_id) can collide across tracks.
+-- Adding track_id makes the key unique per-track.
+DROP INDEX IF EXISTS idx_transcript_stt_result;
+CREATE UNIQUE INDEX idx_transcript_stt_result
+    ON transcript_segments(session_id, track_id, user_id, stream_sequence, stt_result_id)
+    WHERE stt_result_id IS NOT NULL;
 `;

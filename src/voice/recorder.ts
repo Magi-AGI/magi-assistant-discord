@@ -12,6 +12,7 @@ import {
   getTrackCountForUser,
 } from '../db/queries.js';
 import { OggMuxer } from './ogg-muxer.js';
+import { ffmpegRegistry } from '../stt/process-registry.js';
 
 /**
  * Parse the Opus TOC byte to extract the frame duration.
@@ -158,6 +159,12 @@ export class SessionRecorder {
       // Write raw Opus packet to OGG container
       muxer.writeOpusPacket(chunk);
       track.frameCount++;
+
+      // Feed raw Opus packet to ffmpeg resampler for STT
+      const resampler = ffmpegRegistry.get(userId, this.sessionId);
+      if (resampler) {
+        resampler.writeOpusData(chunk);
+      }
     });
 
     audioStream.on('error', (err) => {

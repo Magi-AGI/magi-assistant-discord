@@ -13,6 +13,10 @@ import { shutdownAllSessions } from './session-manager.js';
 import { registerLateJoinHandler } from './voice/late-join.js';
 import { registerTextMonitor } from './text/monitor.js';
 import { startMonitoring, stopMonitoring } from './monitoring.js';
+import { startRetentionCleanup, stopRetentionCleanup } from './retention.js';
+import { ffmpegRegistry } from './stt/process-registry.js';
+import { destroyAllEngines } from './stt/engine-factory.js';
+import { startMcpServer, stopMcpServer } from './mcp/server.js';
 
 const config = getConfig();
 
@@ -57,7 +61,13 @@ async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal} -- starting graceful shutdown...`);
 
   try {
+    ffmpegRegistry.killAll();
     await shutdownAllSessions(client);
+    // Safety net: destroy any engines whose refcount wasn't decremented
+    // (e.g., due to an uncaught error in a session teardown path)
+    destroyAllEngines();
+    stopMcpServer();
+    stopRetentionCleanup();
     stopMonitoring();
     client.destroy();
     closeDb();
@@ -97,6 +107,8 @@ async function main(): Promise<void> {
   registerLateJoinHandler(client);
   registerTextMonitor(client);
   startMonitoring();
+  startRetentionCleanup();
+  await startMcpServer();
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`Bot online as ${readyClient.user.tag}`);

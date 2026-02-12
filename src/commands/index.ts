@@ -8,13 +8,14 @@ import { getConfig, requireClientId } from '../config.js';
 import { logger } from '../logger.js';
 import { sessionCommand } from './session.js';
 import { consentCommand } from './consent.js';
+import { infoCommand } from './info.js';
 
 export interface CommandModule {
   data: RESTPostAPIChatInputApplicationCommandsJSONBody;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 }
 
-const commands: CommandModule[] = [sessionCommand, consentCommand];
+const commands: CommandModule[] = [sessionCommand, consentCommand, infoCommand];
 
 export function getCommandMap(): Map<string, CommandModule> {
   const map = new Map<string, CommandModule>();
