@@ -150,7 +150,8 @@ class GoogleSttStream implements SttStream {
       this.streamOpenedAt = new Date();
     }
     try {
-      this.recognizeStream.write({ audioContent: pcm });
+      // SDK v6 auto-wraps raw buffers in { audioContent } via its pipeline
+      this.recognizeStream.write(pcm);
     } catch {
       // Stream may have been closed by server
       this._open = false;
