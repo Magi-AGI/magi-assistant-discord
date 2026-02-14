@@ -141,10 +141,16 @@ export function registerResources(server: McpServer): void {
       const afterIdStr = urlObj.searchParams.get('after_id');
       const afterId = afterIdStr ? parseInt(afterIdStr, 10) : 0;
       const updatedSince = urlObj.searchParams.get('updated_since') ?? undefined;
+      const limitStr = urlObj.searchParams.get('limit');
+      const limit = limitStr ? Math.max(1, Math.min(parseInt(limitStr, 10) || 1000, 1000)) : undefined;
 
-      const segments = afterId > 0
-        ? getSessionTranscriptsAfterId(sessionId, afterId, 100, updatedSince)
-        : getSessionTranscripts(sessionId);
+      let segments: ReturnType<typeof getSessionTranscripts>;
+      if (afterId > 0) {
+        segments = getSessionTranscriptsAfterId(sessionId, afterId, limit ?? 100, updatedSince);
+      } else {
+        // Pass limit to query — avoids loading entire transcript into memory
+        segments = getSessionTranscripts(sessionId, limit);
+      }
 
       return {
         contents: [{

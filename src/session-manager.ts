@@ -258,34 +258,51 @@ export async function startSession(
     session.diarized = diarizedOption;
 
     // Log initial participants (with consent check)
+    // Wrapped in try/catch for rollback: if participant initialization fails,
+    // clean up runtime + DB state to avoid a zombie session in activeSessions.
     const consentRequired = isConsentRequired(guild.id);
     const gmUserId = interaction.user.id;
-    for (const [, vcMember] of voiceChannel.members) {
-      if (vcMember.user.bot) continue;
+    try {
+      for (const [, vcMember] of voiceChannel.members) {
+        if (vcMember.user.bot) continue;
 
-      // Check consent if required
-      if (consentRequired) {
-        const consent = getConsent(guild.id, vcMember.id);
-        if (!consent || consent.consented !== 1) {
-          logger.info(`Skipping user ${vcMember.id} (no consent) for session ${sessionId}`);
-          continue;
+        // Check consent if required
+        if (consentRequired) {
+          const consent = getConsent(guild.id, vcMember.id);
+          if (!consent || consent.consented !== 1) {
+            logger.info(`Skipping user ${vcMember.id} (no consent) for session ${sessionId}`);
+            continue;
+          }
+        }
+
+        insertParticipant({
+          sessionId,
+          userId: vcMember.id,
+          displayName: vcMember.displayName,
+          joinedAt: now.toISOString(),
+        });
+        session.notifiedUsers.add(vcMember.id);
+        recorder.subscribeUser(vcMember.id);
+
+        // Spawn ffmpeg resampler for STT if enabled
+        // In diarized mode, only GM needs ffmpeg (other users are still recorded but not transcribed)
+        if (config.stt.enabled && (!diarizedOption || vcMember.id === gmUserId)) {
+          const resampler = ffmpegRegistry.spawn(vcMember.id, sessionId);
+          if (!resampler) {
+            logger.warn(`Session start: circuit breaker blocked ffmpeg spawn for user ${vcMember.id} — STT disabled for this user`);
+          }
         }
       }
-
-      insertParticipant({
-        sessionId,
-        userId: vcMember.id,
-        displayName: vcMember.displayName,
-        joinedAt: now.toISOString(),
-      });
-      session.notifiedUsers.add(vcMember.id);
-      recorder.subscribeUser(vcMember.id);
-
-      // Spawn ffmpeg resampler for STT if enabled
-      // In diarized mode, only GM needs ffmpeg (other users are still recorded but not transcribed)
-      if (config.stt.enabled && (!diarizedOption || vcMember.id === gmUserId)) {
-        ffmpegRegistry.spawn(vcMember.id, sessionId);
+    } catch (err) {
+      logger.error(`Session ${sessionId}: participant initialization failed, rolling back:`, err);
+      for (const userId of session.notifiedUsers) {
+        ffmpegRegistry.kill(userId, sessionId);
       }
+      connection.destroy();
+      endSession(sessionId, new Date().toISOString(), 'error');
+      activeSessions.delete(guild.id);
+      await interaction.editReply('Session initialization failed. Please try again.');
+      return;
     }
 
     // Set up STT processor if enabled
@@ -725,8 +742,12 @@ async function resyncVoiceMembers(session: ActiveSession, client: Client): Promi
 
       // Wire STT pipeline if enabled (per-user mode, or diarized GM)
       if (config.stt.enabled && (!session.diarized || userId === session.gmUserId)) {
-        ffmpegRegistry.spawn(userId, session.id);
-        session.sttProcessor?.addUser(userId);
+        const resampler = ffmpegRegistry.spawn(userId, session.id);
+        if (!resampler) {
+          logger.warn(`Resync: circuit breaker blocked ffmpeg spawn for user ${userId} — STT disabled for this user`);
+        } else {
+          session.sttProcessor?.addUser(userId);
+        }
         if (session.transcriptWriter) {
           const track = session.recorder.getTrack(userId);
           if (track) {

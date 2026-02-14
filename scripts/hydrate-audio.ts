@@ -41,14 +41,23 @@ const BYTES_PER_SECOND = SAMPLE_RATE * CHANNELS * BYTES_PER_SAMPLE; // 192000
 const SILENCE_CHUNK_SIZE = 65536;
 const SILENCE_CHUNK = Buffer.alloc(SILENCE_CHUNK_SIZE, 0);
 
+// Max silence gap: 5 minutes (300s). Gaps beyond this are likely timestamp
+// anomalies or very long AFK periods — cap to avoid giant output files.
+const MAX_SILENCE_BYTES = 300 * BYTES_PER_SECOND;
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const sessionId = args.find((a) => !a.startsWith('-'));
   const mixFlag = args.includes('--mix');
+  const noClampFlag = args.includes('--no-clamp');
 
   if (!sessionId) {
-    console.error('Usage: npm run hydrate-audio <session-id> [--mix]');
+    console.error('Usage: npm run hydrate-audio <session-id> [--mix] [--no-clamp]');
     process.exit(1);
+  }
+
+  if (noClampFlag) {
+    console.log('  --no-clamp: silence gaps will NOT be capped (research mode — files may be very large)');
   }
 
   // Verify ffmpeg is available
@@ -85,7 +94,7 @@ async function main(): Promise<void> {
     const hydratedFiles: string[] = [];
 
     for (const track of tracks) {
-      const result = await hydrateTrack(track, outputDir);
+      const result = await hydrateTrack(track, outputDir, noClampFlag);
       if (result) {
         hydratedFiles.push(result);
       }
@@ -109,7 +118,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function hydrateTrack(track: AudioTrackRow, outputDir: string): Promise<string | null> {
+async function hydrateTrack(track: AudioTrackRow, outputDir: string, noClamp = false): Promise<string | null> {
   const bursts = getTrackBursts(track.id);
   if (bursts.length === 0) {
     console.log(`  Track ${track.id} (user ${track.user_id}): no bursts, skipping`);
@@ -169,7 +178,14 @@ async function hydrateTrack(track: AudioTrackRow, outputDir: string): Promise<st
       const alignedTarget = targetPositionBytes - (targetPositionBytes % BYTES_PER_FRAME);
 
       // Insert silence gap (anchor-based: silence = target - current)
-      const silenceBytes = alignedTarget - currentOutputBytes;
+      let silenceBytes = alignedTarget - currentOutputBytes;
+      if (!noClamp && silenceBytes > MAX_SILENCE_BYTES) {
+        const gapS = silenceBytes / BYTES_PER_SECOND;
+        console.warn(
+          `    WARNING: burst ${burst.id} silence gap (${gapS.toFixed(1)}s) exceeds ${MAX_SILENCE_BYTES / BYTES_PER_SECOND}s cap — clamping`
+        );
+        silenceBytes = MAX_SILENCE_BYTES;
+      }
       if (silenceBytes > 0) {
         writeSilence(fd, silenceBytes);
         currentOutputBytes += silenceBytes;

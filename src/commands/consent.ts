@@ -148,7 +148,11 @@ async function handleAccept(interaction: ChatInputCommandInteraction): Promise<v
               session.sttProcessor!.removeUser(userId);
             }
             if (!hasResampler) {
-              ffmpegRegistry.spawn(userId, session.id);
+              const resampler = ffmpegRegistry.spawn(userId, session.id);
+              if (!resampler) {
+                logger.info(`Late consent: circuit breaker blocked ffmpeg spawn for ${interaction.user.tag} — STT repair skipped`);
+                return;
+              }
             }
             // (Re)create gate — now bound to current live resampler
             session.sttProcessor!.addUser(userId);
@@ -180,8 +184,12 @@ async function handleAccept(interaction: ChatInputCommandInteraction): Promise<v
       if (config.stt.enabled) {
         const shouldSetupStt = !session.diarized || userId === session.gmUserId;
         if (shouldSetupStt) {
-          ffmpegRegistry.spawn(userId, session.id);
-          session.sttProcessor?.addUser(userId);
+          const resampler = ffmpegRegistry.spawn(userId, session.id);
+          if (!resampler) {
+            logger.warn(`Late consent: circuit breaker blocked ffmpeg spawn for ${interaction.user.tag} — STT disabled`);
+          } else {
+            session.sttProcessor?.addUser(userId);
+          }
         }
 
         // Register track and display name for transcript writer
@@ -246,6 +254,18 @@ async function handleForget(interaction: ChatInputCommandInteraction): Promise<v
   const guild = interaction.guild;
   if (!guild) {
     await interaction.reply({ content: 'This command can only be used in a server.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Block forget during any active session to prevent FK violations:
+  // forgetUser() deletes audio_tracks rows, but the transcript writer still holds
+  // cached trackId references and would cause constraint errors on the next write.
+  // Strict block (any active session, not just current participant) eliminates all edge cases.
+  if (getActiveSessionForGuild(guild.id)) {
+    await interaction.reply({
+      content: 'Cannot delete data while a recording session is active. Please wait for the session to end, or ask the GM to run `/session stop` first.',
+      flags: MessageFlags.Ephemeral,
+    });
     return;
   }
 

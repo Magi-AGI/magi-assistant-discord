@@ -68,13 +68,14 @@ export async function startMcpServer(): Promise<void> {
   httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
-    // Token auth: check Authorization header first.
-    // Query param ?token= accepted ONLY for GET /sse (EventSource API cannot send custom headers).
-    // POST /messages must use the Authorization header to avoid token leakage in logs/referers.
+    // Token auth: check Authorization header first, then query param fallback.
+    // Query token only accepted on GET /sse (EventSource can't send headers).
+    // POST /messages requires Authorization header to avoid token exposure in URLs.
     const expectedToken = config.mcpAuthToken;
     const authHeader = req.headers.authorization;
     const headerOk = authHeader === `Bearer ${expectedToken}`;
-    const queryTokenOk = req.method === 'GET' && url.pathname === '/sse' && url.searchParams.get('token') === expectedToken;
+    const isGetSse = url.pathname === '/sse' && req.method === 'GET';
+    const queryTokenOk = isGetSse && url.searchParams.get('token') === expectedToken;
     const authenticated = headerOk || queryTokenOk;
 
     if (!authenticated) {
@@ -83,7 +84,7 @@ export async function startMcpServer(): Promise<void> {
       return;
     }
 
-    if (url.pathname === '/sse' && req.method === 'GET') {
+    if (isGetSse) {
       // SSE endpoint — create a new transport for this connection
       const transport = new SSEServerTransport('/messages', res);
       transports.set(transport.sessionId, transport);

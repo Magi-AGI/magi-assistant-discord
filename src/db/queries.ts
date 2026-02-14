@@ -449,7 +449,17 @@ export function insertTranscriptSegment(segment: {
 }
 
 
-export function getSessionTranscripts(sessionId: string): TranscriptSegmentRow[] {
+export function getSessionTranscripts(sessionId: string, limit?: number): TranscriptSegmentRow[] {
+  if (limit && limit > 0) {
+    // Return the LAST N segments (most recent) using a subquery to avoid fetching all rows
+    return getDb()
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM transcript_segments WHERE session_id = ? ORDER BY segment_start DESC LIMIT ?
+         ) sub ORDER BY segment_start`
+      )
+      .all(sessionId, limit) as TranscriptSegmentRow[];
+  }
   return getDb()
     .prepare('SELECT * FROM transcript_segments WHERE session_id = ? ORDER BY segment_start')
     .all(sessionId) as TranscriptSegmentRow[];

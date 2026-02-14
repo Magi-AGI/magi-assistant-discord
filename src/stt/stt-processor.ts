@@ -71,10 +71,14 @@ export class SttProcessor extends EventEmitter {
     // Auto-rebind: if the resampler died (e.g. watchdog kill), respawn and recreate the gate
     const resampler = ffmpegRegistry.get(userId, this.sessionId);
     if (!resampler || !resampler.alive) {
-      logger.warn(`SttProcessor: resampler dead for user ${userId}, respawning and rebinding gate`);
       gate.destroy();
       this.gates.delete(userId);
-      ffmpegRegistry.spawn(userId, this.sessionId);
+      const newResampler = ffmpegRegistry.spawn(userId, this.sessionId);
+      if (!newResampler) {
+        logger.warn(`SttProcessor: circuit breaker blocked respawn for user ${userId} — STT disabled until breaker resets`);
+        return;
+      }
+      logger.warn(`SttProcessor: resampler dead for user ${userId}, respawned and rebinding gate`);
       this.addUser(userId);
       // Trigger speaking start on the freshly created gate
       this.gates.get(userId)?.onSpeakingStart();

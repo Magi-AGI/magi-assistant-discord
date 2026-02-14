@@ -86,7 +86,14 @@ export class FfmpegResampler {
     // Reset watchdog on every write (user is still sending audio)
     this.resetWatchdog();
 
-    const ok = this.process.stdin.write(chunk);
+    let ok: boolean;
+    try {
+      ok = this.process.stdin.write(chunk);
+    } catch {
+      // Broken pipe / destroyed stream — mark dead and stop writing
+      this._alive = false;
+      return;
+    }
     if (!ok) {
       // Backpressure — pause until drain event
       this.paused = true;
@@ -103,7 +110,7 @@ export class FfmpegResampler {
     return this._alive;
   }
 
-  /** Gracefully kill the ffmpeg process. */
+  /** Gracefully kill the ffmpeg process. Two-stage: SIGTERM, then SIGKILL after 2s. */
   kill(): void {
     if (!this._alive) return;
     this._alive = false;
@@ -114,7 +121,25 @@ export class FfmpegResampler {
       this.process.kill('SIGTERM');
     } catch {
       // Already dead
+      return;
     }
+
+    // SIGKILL fallback: if process hasn't exited after 2s, force kill
+    const sigkillTimer = setTimeout(() => {
+      // Verify process hasn't already exited (prevents PID reuse race)
+      if (this.process.exitCode !== null || this.process.signalCode !== null) return;
+      try {
+        this.process.kill('SIGKILL');
+        logger.warn(`ffmpeg resampler (${this.userId}): SIGTERM ignored, sent SIGKILL (pid=${this.process.pid})`);
+      } catch {
+        // Already exited — good
+      }
+    }, 2000);
+
+    // Clear fallback timer if process exits normally
+    this.process.once('exit', () => {
+      clearTimeout(sigkillTimer);
+    });
 
     logger.debug(`ffmpeg resampler killed for user ${this.userId}`);
   }

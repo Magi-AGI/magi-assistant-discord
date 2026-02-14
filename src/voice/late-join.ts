@@ -90,15 +90,20 @@ export function registerLateJoinHandler(client: Client): void {
     if (getConfig().stt.enabled) {
       if (!session.diarized) {
         // Per-user mode: each participant gets their own ffmpeg + gate
-        ffmpegRegistry.spawn(userId, session.id);
-
-        if (session.sttProcessor) {
+        const resampler = ffmpegRegistry.spawn(userId, session.id);
+        if (!resampler) {
+          logger.warn(`Late joiner: circuit breaker blocked ffmpeg spawn for user ${userId} — STT disabled for this user`);
+        } else if (session.sttProcessor) {
           session.sttProcessor.addUser(userId);
         }
       } else if (userId === session.gmUserId) {
         // Diarized mode: only the GM gets ffmpeg + gate (e.g., GM rejoin after disconnect)
-        ffmpegRegistry.spawn(userId, session.id);
-        session.sttProcessor?.addUser(userId);
+        const resampler = ffmpegRegistry.spawn(userId, session.id);
+        if (!resampler) {
+          logger.warn(`Late joiner: circuit breaker blocked ffmpeg spawn for GM ${userId} — STT disabled`);
+        } else {
+          session.sttProcessor?.addUser(userId);
+        }
       }
 
       // Register new track and display name in transcript writer

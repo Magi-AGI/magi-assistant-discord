@@ -137,20 +137,24 @@ function handleMessageUpdate(message: Message | PartialMessage): void {
 
 function handleMessageDelete(message: Message | PartialMessage): void {
   if (!message.guild) return;
+  if (isSelf(message.author?.id)) return;
 
   const sessionId = isMonitoredChannel(message.guild.id, message.channelId);
   if (!sessionId) return;
 
-  // Consent gate: if author is known and consent is required, skip non-consented users.
-  // For uncached partials where author is unknown, we record the deletion event
-  // with userId=null (no PII captured).
-  if (message.author && isConsentRequired(message.guild.id)) {
+  const consentRequired = isConsentRequired(message.guild.id);
+
+  // Consent gate: if author is known, check consent.
+  // If author is unknown (uncached partial) and consent is required,
+  // store metadata-only (no content) to avoid capturing non-consented data.
+  if (message.author && consentRequired) {
     const consent = getConsent(message.guild.id, message.author.id);
     if (!consent || consent.consented !== 1) return;
   }
 
   const userId = message.author?.id ?? null;
-  const content = message.content ?? null;
+  // When consent is required and author is unknown, omit content (metadata-only)
+  const content = (consentRequired && !message.author) ? null : (message.content ?? null);
 
   insertTextEvent({
     sessionId,
