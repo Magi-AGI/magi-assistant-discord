@@ -1,3 +1,4 @@
+import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   getActiveSession as getActiveSessionDb,
@@ -84,7 +85,7 @@ export function registerResources(server: McpServer): void {
   // session://{id} — session details
   server.resource(
     'session-detail',
-    'session://{id}',
+    new ResourceTemplate('session://{id}', { list: undefined }),
     { description: 'Session details including participants and tracks' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -132,7 +133,7 @@ export function registerResources(server: McpServer): void {
   // session://{id}/transcript — all transcript segments
   server.resource(
     'session-transcript',
-    'session://{id}/transcript',
+    new ResourceTemplate('session://{id}/transcript', { list: undefined }),
     { description: 'Transcript segments (supports ?after_id= and ?updated_since= for incremental fetch)' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -177,7 +178,7 @@ export function registerResources(server: McpServer): void {
   // session://{id}/text-events — text channel messages
   server.resource(
     'session-text-events',
-    'session://{id}/text-events',
+    new ResourceTemplate('session://{id}/text-events', { list: undefined }),
     { description: 'Text channel messages captured during a session' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
@@ -205,7 +206,7 @@ export function registerResources(server: McpServer): void {
   // session://{id}/audio-tracks — track metadata
   server.resource(
     'session-audio-tracks',
-    'session://{id}/audio-tracks',
+    new ResourceTemplate('session://{id}/audio-tracks', { list: undefined }),
     { description: 'Audio track metadata for a session' },
     async (uri) => {
       const sessionId = extractSessionId(uri.href);
