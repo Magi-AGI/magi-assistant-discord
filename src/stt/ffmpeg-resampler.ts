@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { type Readable } from 'stream';
+import { OpusEncoder } from '@discordjs/opus';
 import { logger } from '../logger.js';
 
 /**
@@ -12,8 +13,11 @@ import { logger } from '../logger.js';
 const IDLE_WATCHDOG_MS = 60 * 60 * 1000;
 
 /**
- * Spawns an ffmpeg subprocess that converts raw Opus packets to 16kHz mono PCM (s16le)
- * suitable for STT engines.
+ * Decodes raw Opus packets to PCM via @discordjs/opus, then resamples
+ * from 48kHz stereo to 16kHz mono via ffmpeg (s16le throughout).
+ *
+ * Two-stage pipeline avoids the `-f opus` demuxer which isn't available
+ * in most ffmpeg builds (raw Opus demuxer != Ogg/Opus).
  *
  * Includes:
  * - Idle watchdog (60 min) to catch leaked processes from desynced voice state
@@ -21,6 +25,7 @@ const IDLE_WATCHDOG_MS = 60 * 60 * 1000;
  */
 export class FfmpegResampler {
   private process: ChildProcess;
+  private opusDecoder: OpusEncoder;
   private _alive = true;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private paused = false;
@@ -29,8 +34,14 @@ export class FfmpegResampler {
   constructor(userId: string) {
     this.userId = userId;
 
+    // Discord sends 48kHz stereo Opus — decode to PCM first
+    this.opusDecoder = new OpusEncoder(48000, 2);
+
+    // ffmpeg receives raw PCM (48kHz stereo s16le) and resamples to 16kHz mono
     this.process = spawn('ffmpeg', [
-      '-f', 'opus',
+      '-f', 's16le',
+      '-ar', '48000',
+      '-ac', '2',
       '-i', 'pipe:0',
       '-ar', '16000',
       '-ac', '1',
@@ -62,6 +73,16 @@ export class FfmpegResampler {
       logger.error(`ffmpeg resampler (${userId}): spawn error:`, err);
     });
 
+    // Handle async EPIPE errors on stdin (not caught by write() try/catch)
+    this.process.stdin?.on('error', (err) => {
+      if ((err as NodeJS.ErrnoException).code === 'EPIPE') {
+        this._alive = false;
+        logger.debug(`ffmpeg resampler (${this.userId}): stdin EPIPE — ffmpeg process exited`);
+      } else {
+        logger.warn(`ffmpeg resampler (${this.userId}): stdin error:`, err);
+      }
+    });
+
     // Resume writes when stdin drains
     this.process.stdin?.on('drain', () => {
       if (this.paused) {
@@ -76,7 +97,7 @@ export class FfmpegResampler {
     logger.debug(`ffmpeg resampler spawned for user ${userId}, pid=${this.process.pid}`);
   }
 
-  /** Write raw Opus data to ffmpeg stdin. Drops when backpressured. */
+  /** Write raw Opus data — decodes to PCM then pipes to ffmpeg. Drops when backpressured. */
   writeOpusData(chunk: Buffer): void {
     if (!this._alive || !this.process.stdin?.writable) return;
 
@@ -86,9 +107,18 @@ export class FfmpegResampler {
     // Reset watchdog on every write (user is still sending audio)
     this.resetWatchdog();
 
+    // Decode Opus packet to PCM
+    let pcm: Buffer;
+    try {
+      pcm = this.opusDecoder.decode(chunk);
+    } catch {
+      // Corrupted or unsupported Opus packet — skip it
+      return;
+    }
+
     let ok: boolean;
     try {
-      ok = this.process.stdin.write(chunk);
+      ok = this.process.stdin.write(pcm);
     } catch {
       // Broken pipe / destroyed stream — mark dead and stop writing
       this._alive = false;
