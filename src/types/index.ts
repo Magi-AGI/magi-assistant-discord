@@ -16,6 +16,8 @@ export interface SttConfig {
     sampleRateHertz: number;
     streamRotationMinutes: number;
     streamOverlapSeconds: number;
+    /** Phrase hints for speech recognition — character names, place names, game terms, etc. */
+    phraseHints: string[];
   };
   diarization: { minSpeakers: number; maxSpeakers: number };
   silenceTimeoutSeconds: number;

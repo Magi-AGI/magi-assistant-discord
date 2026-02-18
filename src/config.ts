@@ -110,6 +110,9 @@ function parseSttConfig(raw: Record<string, unknown>): SttConfig {
       sampleRateHertz: validatePositiveNumber(gc.sampleRateHertz, 'stt.googleCloud.sampleRateHertz', 16000),
       streamRotationMinutes: validatePositiveNumber(gc.streamRotationMinutes, 'stt.googleCloud.streamRotationMinutes', 4),
       streamOverlapSeconds: validatePositiveNumber(gc.streamOverlapSeconds, 'stt.googleCloud.streamOverlapSeconds', 5),
+      phraseHints: Array.isArray(gc.phraseHints)
+        ? gc.phraseHints.filter((h): h is string => typeof h === 'string')
+        : [],
     },
     diarization: {
       minSpeakers: validatePositiveNumber(diar.minSpeakers, 'stt.diarization.minSpeakers', 2),

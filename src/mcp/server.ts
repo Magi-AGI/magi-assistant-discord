@@ -42,7 +42,7 @@ function checkSocketAlive(socketPath: string): Promise<boolean> {
   });
 }
 
-export async function startMcpServer(): Promise<void> {
+export async function startMcpServer(discordClient?: import('discord.js').Client): Promise<void> {
   const config = getConfig();
   if (!config.mcpAuthToken) {
     logger.info('MCP server: disabled (no MCP_AUTH_TOKEN set)');
@@ -63,7 +63,7 @@ export async function startMcpServer(): Promise<void> {
   );
 
   registerResources(mcpServer);
-  registerTools(mcpServer);
+  registerTools(mcpServer, discordClient);
 
   httpServer = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);

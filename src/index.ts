@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   registerTextMonitor(client);
   startMonitoring();
   startRetentionCleanup();
-  await startMcpServer();
+  await startMcpServer(client);
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`Bot online as ${readyClient.user.tag}`);

@@ -68,6 +68,10 @@ class GoogleSttStream implements SttStream {
         languageCode: config.googleCloud.languageCode,
         model: config.googleCloud.model,
         enableAutomaticPunctuation: config.googleCloud.enableAutomaticPunctuation,
+        // Phrase hints boost recognition of character names, place names, game terms
+        ...(config.googleCloud.phraseHints.length > 0 && {
+          speechContexts: [{ phrases: config.googleCloud.phraseHints }],
+        }),
       },
       interimResults: true,
     };

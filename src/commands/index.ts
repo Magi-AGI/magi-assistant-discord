@@ -9,13 +9,14 @@ import { logger } from '../logger.js';
 import { sessionCommand } from './session.js';
 import { consentCommand } from './consent.js';
 import { infoCommand } from './info.js';
+import { yesCommand, noCommand } from './image-confirm.js';
 
 export interface CommandModule {
   data: RESTPostAPIChatInputApplicationCommandsJSONBody;
   execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
 }
 
-const commands: CommandModule[] = [sessionCommand, consentCommand, infoCommand];
+const commands: CommandModule[] = [sessionCommand, consentCommand, infoCommand, yesCommand, noCommand];
 
 export function getCommandMap(): Map<string, CommandModule> {
   const map = new Map<string, CommandModule>();
