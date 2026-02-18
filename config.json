@@ -5,9 +5,13 @@
   "eventLoopLagThresholdMs": 100,
   "maxBurstDurationMinutes": 10,
   "guilds": {
-    "GUILD_ID_HERE": {
-      "textChannels": ["CHANNEL_ID_HERE"],
-      "gmRoleId": "ROLE_ID_HERE",
+    "1459323906711355687": {
+      "textChannels": [
+        "1459323907696754880",
+        "1459324243492995082",
+        "1459324340863631390",
+        "1459324389693591824"
+      ],
       "timezone": "America/New_York"
     }
   }
