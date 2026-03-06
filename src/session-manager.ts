@@ -311,7 +311,7 @@ export async function startSession(
       let sttOnStart: ((userId: string) => void) | null = null;
       let sttOnEnd: ((userId: string) => void) | null = null;
       try {
-        const { acquireSttEngine } = await import('./stt/engine-factory.js');
+        const { acquireSttEngine } = await import('@magi/common');
         const { SttProcessor } = await import('./stt/stt-processor.js');
 
         const engine = acquireSttEngine(config.stt, diarizedOption);
@@ -382,7 +382,7 @@ export async function startSession(
         }
 
         // Wire transcript events to writer and live subscriptions
-        sttProcessor.on('transcript', (event: import('./stt/types.js').TranscriptEvent) => {
+        sttProcessor.on('transcript', (event: import('@magi/common').TranscriptEvent) => {
           const rowId = writer.write(event);
           if (rowId !== null) {
             liveTranscripts.onTranscriptStored(rowId, event);
@@ -413,7 +413,7 @@ export async function startSession(
         // Release engine if acquired (prevents gRPC refcount leak)
         if (engineAcquired) {
           try {
-            const { releaseSttEngine } = await import('./stt/engine-factory.js');
+            const { releaseSttEngine } = await import('@magi/common');
             releaseSttEngine(config.stt, diarizedOption);
           } catch { /* engine module not loaded */ }
         }
@@ -667,7 +667,7 @@ export function teardownUserInSession(session: ActiveSession, userId: string): v
 async function releaseSessionEngine(session: ActiveSession): Promise<void> {
   if (!session.sttProcessor) return;
   try {
-    const { releaseSttEngine } = await import('./stt/engine-factory.js');
+    const { releaseSttEngine } = await import('@magi/common');
     const config = getConfig();
     releaseSttEngine(config.stt, session.diarized);
   } catch {

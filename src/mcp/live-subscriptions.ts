@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { TranscriptEvent } from '../stt/types.js';
+import type { TranscriptEvent } from '@magi/common';
 import { logger } from '../logger.js';
 
 interface StoredSegment {

@@ -1,4 +1,4 @@
-import type { TranscriptEvent } from './types.js';
+import type { TranscriptEvent } from '@magi/common';
 import {
   insertTranscriptSegment,
   findBurstForTimestamp,

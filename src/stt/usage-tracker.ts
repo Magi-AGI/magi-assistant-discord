@@ -1,6 +1,6 @@
 import { insertSttUsage } from '../db/queries.js';
 import { logger } from '../logger.js';
-import type { SttConfig } from '../types/index.js';
+import type { SttConfig } from '@magi/common';
 
 /**
  * Tracks cumulative STT usage for a session.

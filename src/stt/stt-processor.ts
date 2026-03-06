@@ -1,7 +1,5 @@
 import { EventEmitter } from 'events';
-import type { SttEngine, TranscriptEvent } from './types.js';
-import type { SttConfig } from '../types/index.js';
-import { VadGate } from './vad-gate.js';
+import { VadGate, type SttEngine, type TranscriptEvent, type SttConfig } from '@magi/common';
 import { ffmpegRegistry } from './process-registry.js';
 import { logger } from '../logger.js';
 

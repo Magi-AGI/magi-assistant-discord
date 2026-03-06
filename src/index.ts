@@ -15,8 +15,11 @@ import { registerTextMonitor } from './text/monitor.js';
 import { startMonitoring, stopMonitoring } from './monitoring.js';
 import { startRetentionCleanup, stopRetentionCleanup } from './retention.js';
 import { ffmpegRegistry } from './stt/process-registry.js';
-import { destroyAllEngines } from './stt/engine-factory.js';
+import { destroyAllEngines, setLogger } from '@magi/common';
 import { startMcpServer, stopMcpServer } from './mcp/server.js';
+
+// Wire the app logger into @magi/common so STT modules use the same logger
+setLogger(logger);
 
 const config = getConfig();
 
