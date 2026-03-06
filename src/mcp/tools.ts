@@ -81,7 +81,7 @@ export function registerTools(server: McpServer, client?: Client): void {
           type: 'text',
           timestamp: e.event_received_at,
           userId: e.user_id,
-          displayName: null,
+          displayName: e.display_name,
           content: e.content,
         });
       }

@@ -4,7 +4,7 @@ import * as path from 'path';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_VERSION = 5;
 
 let _db: Database.Database | null = null;
 
@@ -67,6 +67,12 @@ function migrate(db: Database.Database): void {
     logger.info('Running migration: version 3 -> 4 (UPSERT key includes track_id)');
     db.exec(SCHEMA_V4);
     db.pragma('user_version = 4');
+  }
+
+  if (currentVersion < 5) {
+    logger.info('Running migration: version 4 -> 5 (text_events display_name)');
+    db.exec(SCHEMA_V5);
+    db.pragma('user_version = 5');
   }
 }
 
@@ -259,4 +265,8 @@ DROP INDEX IF EXISTS idx_transcript_stt_result;
 CREATE UNIQUE INDEX idx_transcript_stt_result
     ON transcript_segments(session_id, track_id, user_id, stream_sequence, stt_result_id)
     WHERE stt_result_id IS NOT NULL;
+`;
+
+const SCHEMA_V5 = `
+ALTER TABLE text_events ADD COLUMN display_name TEXT;
 `;

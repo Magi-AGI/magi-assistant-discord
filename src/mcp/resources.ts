@@ -192,6 +192,8 @@ export function registerResources(server: McpServer): void {
               id: e.id,
               messageId: e.message_id,
               userId: e.user_id,
+              authorId: e.user_id,
+              authorName: e.display_name,
               channelId: e.channel_id,
               timestamp: e.message_timestamp,
               content: e.content,

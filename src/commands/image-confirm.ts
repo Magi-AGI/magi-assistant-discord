@@ -70,6 +70,7 @@ function recordInteractionAsTextEvent(
     sessionId,
     messageId: interaction.id,
     userId: interaction.user.id,
+    displayName: interaction.user.displayName ?? interaction.user.username,
     channelId: interaction.channelId,
     messageTimestamp: new Date(interaction.createdTimestamp).toISOString(),
     eventReceivedAt: new Date().toISOString(),

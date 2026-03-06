@@ -220,6 +220,7 @@ export interface TextEventRow {
   session_id: string;
   message_id: string;
   user_id: string | null;
+  display_name: string | null;
   channel_id: string;
   message_timestamp: string | null;
   event_received_at: string;
@@ -231,6 +232,7 @@ export function insertTextEvent(event: {
   sessionId: string;
   messageId: string;
   userId: string | null;
+  displayName: string | null;
   channelId: string;
   messageTimestamp: string | null;
   eventReceivedAt: string;
@@ -239,13 +241,14 @@ export function insertTextEvent(event: {
 }): void {
   getDb()
     .prepare(
-      `INSERT INTO text_events (session_id, message_id, user_id, channel_id, message_timestamp, event_received_at, content, event_type)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO text_events (session_id, message_id, user_id, display_name, channel_id, message_timestamp, event_received_at, content, event_type)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       event.sessionId,
       event.messageId,
       event.userId,
+      event.displayName,
       event.channelId,
       event.messageTimestamp,
       event.eventReceivedAt,
