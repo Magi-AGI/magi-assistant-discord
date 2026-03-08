@@ -142,9 +142,14 @@ export async function startSession(
     const guildConfig = config.guilds[guild.id];
 
     // Determine text channels to monitor
-    const textChannelIds: string[] = channelOverride
+    // v6: Auto-include interaction channel as fallback when no channels configured
+    let textChannelIds: string[] = channelOverride
       ? [channelOverride.id]
       : (guildConfig?.textChannels ?? []);
+    if (textChannelIds.length === 0 && interaction.channelId) {
+      textChannelIds = [interaction.channelId];
+      logger.info(`No text channels configured — auto-monitoring interaction channel ${interaction.channelId}`);
+    }
 
     // Permission pre-checks
     const voicePerms = checkVoicePermissions(voiceChannel as unknown as import('discord.js').GuildChannel);
