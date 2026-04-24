@@ -256,6 +256,20 @@ export async function startSession(
 
     activeSessions.set(guild.id, session);
 
+    // Wire resampler respawn: when SessionRecorder detects a dead ffmpeg
+    // mid-session and successfully respawns it, rebind the STT processor to
+    // the fresh PCM output so STT doesn't stay tied to the dead stream.
+    recorder.onResamplerRespawn = (userId: string) => {
+      try {
+        if (session.sttProcessor?.hasUser(userId)) {
+          session.sttProcessor.rebindUser(userId);
+          logger.info(`Session ${sessionId}: rebound STT gate for user ${userId} after resampler respawn`);
+        }
+      } catch (err) {
+        logger.warn(`Session ${sessionId}: failed to rebind STT after respawn for user ${userId}:`, err);
+      }
+    };
+
     // Read diarized option early so participant loop knows whether to spawn ffmpeg
     const diarizedOption = config.stt.enabled
       ? (interaction.options.getBoolean('diarized') ?? false)

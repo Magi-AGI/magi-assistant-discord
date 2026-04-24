@@ -4,7 +4,7 @@ import * as path from 'path';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_VERSION = 6;
 
 let _db: Database.Database | null = null;
 
@@ -73,6 +73,12 @@ function migrate(db: Database.Database): void {
     logger.info('Running migration: version 4 -> 5 (text_events display_name)');
     db.exec(SCHEMA_V5);
     db.pragma('user_version = 5');
+  }
+
+  if (currentVersion < 6) {
+    logger.info('Running migration: version 5 -> 6 (track_parts)');
+    db.exec(SCHEMA_V6);
+    db.pragma('user_version = 6');
   }
 }
 
@@ -269,4 +275,16 @@ CREATE UNIQUE INDEX idx_transcript_stt_result
 
 const SCHEMA_V5 = `
 ALTER TABLE text_events ADD COLUMN display_name TEXT;
+`;
+
+const SCHEMA_V6 = `
+CREATE TABLE track_parts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id        INTEGER NOT NULL REFERENCES audio_tracks(id),
+    part_number     INTEGER NOT NULL,
+    file_path       TEXT NOT NULL,
+    started_at      TEXT NOT NULL,
+    UNIQUE(track_id, part_number)
+);
+CREATE INDEX idx_track_parts_track ON track_parts(track_id);
 `;

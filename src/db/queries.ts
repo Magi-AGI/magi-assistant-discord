@@ -695,3 +695,35 @@ export function deleteUserDataInGuild(guildId: string, userId: string): { sessio
 
   return { sessionsAffected, segmentsDeleted, tracksDeleted };
 }
+
+
+// --- Track-part queries (added for ffmpeg respawn rotation) ---
+
+export interface TrackPartRow {
+  id: number;
+  track_id: number;
+  part_number: number;
+  file_path: string;
+  started_at: string;
+}
+
+export function insertTrackPart(part: {
+  trackId: number;
+  partNumber: number;
+  filePath: string;
+  startedAt: string;
+}): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO track_parts (track_id, part_number, file_path, started_at)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(part.trackId, part.partNumber, part.filePath, part.startedAt);
+  return Number(result.lastInsertRowid);
+}
+
+export function getTrackParts(trackId: number): TrackPartRow[] {
+  return getDb()
+    .prepare('SELECT * FROM track_parts WHERE track_id = ? ORDER BY part_number')
+    .all(trackId) as TrackPartRow[];
+}

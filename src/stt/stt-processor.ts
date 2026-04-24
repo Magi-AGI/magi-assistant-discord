@@ -62,6 +62,18 @@ export class SttProcessor extends EventEmitter {
     }
   }
 
+  /**
+   * Rebind a user's VadGate to a fresh resampler. Used when the old resampler
+   * died (idle watchdog, crash) and SessionRecorder has already respawned one.
+   * We destroy the old gate (which unbinds from the dead pcmOutput) and
+   * recreate it on the new resampler's PCM stream.
+   */
+  rebindUser(userId: string): void {
+    if (this.destroyed) return;
+    this.removeUser(userId);
+    this.addUser(userId);
+  }
+
   onSpeakingStart(userId: string): void {
     const gate = this.gates.get(userId);
     if (!gate) return;
