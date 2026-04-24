@@ -83,7 +83,26 @@ export interface UserTrack {
    * can stitch them back together.
    */
   partNumber: number;
+  /**
+   * Number of times we have rebound the @discordjs/voice subscription for this
+   * track. Bounded by REBIND_MAX_PER_TRACK to avoid hot-loops if the receiver is
+   * permanently wedged.
+   */
+  rebindCount: number;
 }
+
+/**
+ * Cap on how many times we will resubscribe a single UserTrack's audio stream
+ * to protect against pathological loops. In normal operation a well-behaved
+ * session rebinds 0-2 times total per participant.
+ */
+const REBIND_MAX_PER_TRACK = 20;
+
+/**
+ * Minimum time between rebinds per user. Prevents thrash when a sequence of
+ * decrypt errors arrive back-to-back.
+ */
+const REBIND_MIN_INTERVAL_MS = 250;
 
 /** Manages all audio tracks for a session. */
 export class SessionRecorder {
@@ -98,6 +117,11 @@ export class SessionRecorder {
    */
   private recentRespawns = new Map<string, number[]>();
   /**
+   * Last rebind timestamp per userId (ms). Used to rate-limit
+   * receiver-subscription rebinds triggered by speaking.start.
+   */
+  private lastRebindAt = new Map<string, number>();
+  /**
    * Optional hook fired after a successful resampler respawn, so SessionManager
    * can rebind its SttProcessor to the fresh process. If not set, the STT
    * pipeline's lazy rebind on the next onSpeakingStart will pick up the new
@@ -110,6 +134,35 @@ export class SessionRecorder {
     this.receiver = receiver;
     const config = getConfig();
     this.sessionDir = path.resolve(config.dataDir, sessionId);
+
+    // --- 2026-04-23 incident: subscription-rebind guard ---
+    //
+    // @discordjs/voice VoiceReceiver.onUdpMessage destroys an AudioReceiveStream
+    // on any parsePacket throw (e.g. a single DAVE DecryptionFailed), and then
+    // deletes the userId from its internal subscriptions map on the stream's
+    // 'close' event. After that point every UDP packet for the user is silently
+    // dropped at `if (!stream) return`, and the OGG file stops growing — even
+    // though the user is still in the channel and talking.
+    //
+    // To recover, listen for SpeakingMap 'start' events. The speaking map is
+    // updated from the VoiceReceiver.onUdpMessage path *before* the
+    // subscription lookup (index.js line 2113), so it still fires when the
+    // subscription has been killed. If we have an UserTrack whose underlying
+    // stream is destroyed/closed, rebind it in place.
+    //
+    // We use arrow-function binding so `this` is correct, and we tolerate the
+    // case where receiver.speaking is missing (older voice lib builds).
+    const speakingEmitter = (this.receiver as unknown as {
+      speaking?: { on?: (e: string, l: (userId: string) => void) => void };
+    }).speaking;
+    if (speakingEmitter && typeof speakingEmitter.on === 'function') {
+      speakingEmitter.on('start', (userId: string) => this.onSpeakingStart(userId));
+    } else {
+      logger.warn(
+        'SessionRecorder: VoiceReceiver.speaking.on is not available; ' +
+        'subscription auto-rebind will only run on audioStream error events.'
+      );
+    }
   }
 
   /** Subscribe to a user's audio stream and begin recording. */
@@ -165,10 +218,26 @@ export class SessionRecorder {
       firstPacketRecorded: false,
       closed: false,
       partNumber: 0,
+      rebindCount: 0,
     };
 
+    this.attachStreamHandlers(track);
+
+    this.tracks.set(userId, track);
+    logger.info(`Subscribed to audio for user ${userId}, track ${track.trackId} (file: ${fileName})`);
+    return track;
+  }
+
+  /**
+   * Wire 'data' / 'error' / 'end' handlers onto track.stream. Factored out of
+   * subscribeUser so rebindSubscription() can reuse the same wiring without
+   * creating a new UserTrack / OGG file / DB row.
+   */
+  private attachStreamHandlers(track: UserTrack): void {
+    const { stream, userId } = track;
+
     // Process each audio packet
-    audioStream.on('data', (chunk: Buffer) => {
+    stream.on('data', (chunk: Buffer) => {
       if (track.closed) return;
 
       // Record first packet wall-clock time
@@ -207,19 +276,89 @@ export class SessionRecorder {
       }
     });
 
-    audioStream.on('error', (err) => {
+    stream.on('error', (err) => {
       logger.error(`Audio stream error for user ${userId}, track ${track.trackId}:`, err);
+      // @discordjs/voice destroys the stream on parsePacket throws and removes
+      // the userId from its subscriptions map via the 'close' handler. If we do
+      // nothing here, the user goes dark for the rest of the session even
+      // though they're still in the channel. Rebind in place.
+      this.rebindSubscription(track, `error: ${err?.message ?? 'unknown'}`);
     });
 
-    audioStream.on('end', () => {
+    stream.on('end', () => {
       logger.debug(`Audio stream ended for user ${userId}, track ${track.trackId}`);
-      // Don't close here -- stream end doesn't mean the user left.
-      // We close explicitly on user leave or session stop.
+      // Don't close the track here -- stream end doesn't mean the user left.
+      // We close explicitly on user leave or session stop. But we DO want to
+      // rebind: an 'end' event with the user still present means the underlying
+      // subscription has been torn down and further UDP packets will be dropped.
+      if (!track.closed) {
+        this.rebindSubscription(track, 'stream end with track still active');
+      }
     });
+  }
 
-    this.tracks.set(userId, track);
-    logger.info(`Subscribed to audio for user ${userId}, track ${track.trackId} (file: ${fileName})`);
-    return track;
+  /**
+   * Called for each SpeakingMap 'start' event. If we have a track for this user
+   * whose underlying receive stream is destroyed/closed, resubscribe. This is
+   * the recovery path for the silent-drop case where no 'error' event ever
+   * fires — @discordjs/voice returns early at `if (!stream) return` inside
+   * onUdpMessage when the subscription has been deleted.
+   */
+  private onSpeakingStart(userId: string): void {
+    const track = this.tracks.get(userId);
+    if (!track || track.closed) return;
+    const s = track.stream as Readable & { destroyed?: boolean; readable?: boolean };
+    const needsRebind = Boolean(s.destroyed) || s.readable === false;
+    if (!needsRebind) return;
+    this.rebindSubscription(track, 'speaking.start detected on destroyed subscription');
+  }
+
+  /**
+   * Drop the current `receiver.subscribe(userId)` handle and create a fresh one,
+   * reusing the same UserTrack (muxer, writeStream, trackId, frameCount). Rate-
+   * limited per user to avoid thrash; bounded by REBIND_MAX_PER_TRACK.
+   */
+  private rebindSubscription(track: UserTrack, reason: string): void {
+    if (track.closed) return;
+
+    const now = Date.now();
+    const last = this.lastRebindAt.get(track.userId) ?? 0;
+    if (now - last < REBIND_MIN_INTERVAL_MS) {
+      // A recent rebind already fired; skip this one to prevent tight loops.
+      return;
+    }
+    if (track.rebindCount >= REBIND_MAX_PER_TRACK) {
+      if (track.rebindCount === REBIND_MAX_PER_TRACK) {
+        logger.error(
+          `SessionRecorder: rebind limit (${REBIND_MAX_PER_TRACK}) reached for user ${track.userId}, ` +
+          `track ${track.trackId} — giving up. Reason: ${reason}`
+        );
+        track.rebindCount++; // bump so we only log once
+      }
+      return;
+    }
+
+    track.rebindCount++;
+    this.lastRebindAt.set(track.userId, now);
+
+    // Destroy the old stream defensively (may already be destroyed).
+    try {
+      track.stream.removeAllListeners();
+      if (!(track.stream as Readable & { destroyed?: boolean }).destroyed) {
+        track.stream.destroy();
+      }
+    } catch {
+      // best-effort
+    }
+
+    logger.warn(
+      `SessionRecorder: rebinding receiver subscription for user ${track.userId}, ` +
+      `track ${track.trackId} (rebind #${track.rebindCount}). Reason: ${reason}`
+    );
+
+    const newStream = this.receiver.subscribe(track.userId);
+    track.stream = newStream;
+    this.attachStreamHandlers(track);
   }
 
   /**
@@ -336,10 +475,12 @@ export class SessionRecorder {
     endAudioTrack(track.trackId, new Date().toISOString());
     this.tracks.delete(userId);
     this.recentRespawns.delete(userId);
+    this.lastRebindAt.delete(userId);
 
     logger.info(
       `Closed track ${track.trackId} for user ${userId}: ${track.frameCount} frames written` +
-      (track.partNumber > 0 ? ` across ${track.partNumber + 1} parts` : '')
+      (track.rebindCount > 0 ? `, ${track.rebindCount} receiver rebinds` : '') +
+      (track.partNumber > 0 ? `, across ${track.partNumber + 1} parts` : '')
     );
   }
 
