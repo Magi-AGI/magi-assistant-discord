@@ -12,6 +12,7 @@ import { startSession, stopSession, sessionStatus } from '../session-manager.js'
 import { purgeSession } from '../retention.js';
 import { getSession, insertSpeakerMapping, updateDisplayNameBySpeakerLabel } from '../db/queries.js';
 import { getConfig } from '../config.js';
+import { handlePreflight } from './preflight.js';
 import type { CommandModule } from './index.js';
 
 export const sessionCommand: CommandModule = {
@@ -41,6 +42,11 @@ export const sessionCommand: CommandModule = {
     )
     .addSubcommand((sub) =>
       sub.setName('status').setDescription('Show current session status')
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('preflight')
+        .setDescription('Verify audio/transcript pipeline end-to-end before starting a session')
     )
     .addSubcommand((sub) =>
       sub
@@ -89,6 +95,9 @@ export const sessionCommand: CommandModule = {
           break;
         case 'status':
           await sessionStatus(interaction);
+          break;
+        case 'preflight':
+          await handlePreflight(interaction);
           break;
         case 'purge':
           await handlePurge(interaction);

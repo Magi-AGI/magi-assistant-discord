@@ -136,6 +136,18 @@ export async function startSession(
   startLocks.add(guild.id);
 
   try {
+    // Preflight gate: if the most recent preflight failed, refuse to start.
+    const { getRecentPreflight: _gp, clearPreflight: _cp } = await import('./commands/preflight.js');
+    const _preflight = _gp(guild.id);
+    if (_preflight && !_preflight.ok) {
+      const _rem = _preflight.remediation.length > 0 ? '\n- ' + _preflight.remediation.join('\n- ') : '';
+      await interaction.reply({
+        content: 'Recent `/session preflight` failed — cannot start.\nFix the following and re-run `/session preflight`:' + _rem,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     await interaction.deferReply();
 
     const config = getConfig();
@@ -503,6 +515,8 @@ export async function startSession(
       `Recording session started in **${voiceChannel.name}** with ${participantCount} participant(s).\nSession ID: \`${sessionId}\``
     );
 
+    // Clear cached preflight so the next session has to re-verify.
+    _cp(guild.id);
     logger.info(`Session ${sessionId} started in guild ${guild.id}, voice channel ${voiceChannel.name}`);
   } finally {
     startLocks.delete(guild.id);
