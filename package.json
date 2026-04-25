@@ -10,7 +10,8 @@
     "hydrate-audio": "tsx scripts/hydrate-audio.ts",
     "retranscribe": "tsx scripts/retranscribe.ts",
     "test:voice-grace": "tsx scripts/test-voice-disconnect-grace.ts",
-    "test:mcp": "tsx scripts/mcp-smoke-test.ts"
+    "test:mcp": "tsx scripts/mcp-smoke-test.ts",
+    "fetch-history": "tsx scripts/fetch-channel-history.ts"
   },
   "keywords": [
     "discord",
