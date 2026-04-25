@@ -91,7 +91,7 @@ function checkFfmpegBinary(timeoutMs = 5_000): Promise<{ ok: boolean; stderr: st
  * then tears it down. This proves the full s16le->resample->s16le pipeline is
  * healthy end-to-end before we commit to a real session.
  */
-async function checkResamplerPipeline(userId: string, timeoutMs = 10_000): Promise<{ ok: boolean; reason: string | null; stderrTail: string }> {
+async function checkResamplerPipeline(userId: string, timeoutMs = 5_000): Promise<{ ok: boolean; reason: string | null; stderrTail: string }> {
   // Use a fake sessionId for the preflight key so it doesn't collide with any
   // real session. Prefix with `__preflight__:` so even log audits can tell.
   const sessionId = `__preflight__:${Date.now()}`;
@@ -101,14 +101,19 @@ async function checkResamplerPipeline(userId: string, timeoutMs = 10_000): Promi
   }
 
   try {
-    // Write 200 ms of synthetic silence. We feed raw PCM directly into the
+    // Write 1 second of synthetic silence. We feed raw PCM directly into the
     // child process stdin via writeRawPcm() (skipping the Opus decode step)
     // so we don't need to mint valid Opus frames for preflight. This
     // exercises the ffmpeg resample (48->16) pipe — the piece that
     // historically died mid-session.
     //
-    // 200 ms of 48 kHz stereo s16le = 48000 * 0.2 * 2 * 2 = 38400 bytes.
-    const silenceBytes = 48_000 * 0.2 * 2 * 2;
+    // Why 1 second and not 200ms: ffmpeg's libswr resampler buffers internally
+    // before emitting downsampled output. Smaller writes get held in the
+    // resampling state and never reach pipe:1, causing the preflight to time
+    // out. 1 second of 48 kHz stereo s16le = 192_000 bytes, large enough to
+    // overflow the internal buffer and force at least one block of resampled
+    // PCM out the stdout pipe.
+    const silenceBytes = 48_000 * 1 * 2 * 2;
     const silence = Buffer.alloc(silenceBytes);
     const wrote = resampler.writeRawPcm(silence);
     if (!wrote) {
@@ -116,6 +121,7 @@ async function checkResamplerPipeline(userId: string, timeoutMs = 10_000): Promi
     }
 
     // Read at least a few bytes of PCM back to confirm the pipeline is flowing.
+    // With 1s of input the first output block should land within ~100ms.
     const gotOutput = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), timeoutMs);
       const onData = () => {
