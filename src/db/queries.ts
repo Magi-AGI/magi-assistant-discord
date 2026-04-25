@@ -648,6 +648,180 @@ export function deleteSessionCascade(sessionId: string): void {
   del();
 }
 
+// --- Channel message archive queries ---
+
+export interface ChannelMessageRow {
+  message_id: string;
+  channel_id: string;
+  channel_name: string | null;
+  guild_id: string | null;
+  author_id: string;
+  author_name: string;
+  content: string | null;
+  timestamp: string;
+  edited_timestamp: string | null;
+  attachments: string | null;
+  embeds: string | null;
+  reply_to_id: string | null;
+  is_bot: number;
+  is_pinned: number;
+  source: string;
+}
+
+export function insertChannelMessage(msg: {
+  messageId: string;
+  channelId: string;
+  channelName: string | null;
+  guildId: string | null;
+  authorId: string;
+  authorName: string;
+  content: string | null;
+  timestamp: string;
+  editedTimestamp: string | null;
+  attachments: string | null;
+  embeds: string | null;
+  replyToId: string | null;
+  isBot: boolean;
+  isPinned: boolean;
+  source: string;
+}): boolean {
+  const result = getDb()
+    .prepare(
+      `INSERT OR IGNORE INTO channel_messages
+       (message_id, channel_id, channel_name, guild_id, author_id, author_name,
+        content, timestamp, edited_timestamp, attachments, embeds,
+        reply_to_id, is_bot, is_pinned, source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      msg.messageId, msg.channelId, msg.channelName, msg.guildId,
+      msg.authorId, msg.authorName, msg.content, msg.timestamp,
+      msg.editedTimestamp, msg.attachments, msg.embeds,
+      msg.replyToId, msg.isBot ? 1 : 0, msg.isPinned ? 1 : 0, msg.source
+    );
+  return result.changes > 0;
+}
+
+export function insertChannelMessageBatch(messages: Parameters<typeof insertChannelMessage>[0][]): number {
+  const db = getDb();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO channel_messages
+     (message_id, channel_id, channel_name, guild_id, author_id, author_name,
+      content, timestamp, edited_timestamp, attachments, embeds,
+      reply_to_id, is_bot, is_pinned, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  let inserted = 0;
+  const batch = db.transaction((msgs: typeof messages) => {
+    for (const msg of msgs) {
+      const result = stmt.run(
+        msg.messageId, msg.channelId, msg.channelName, msg.guildId,
+        msg.authorId, msg.authorName, msg.content, msg.timestamp,
+        msg.editedTimestamp, msg.attachments, msg.embeds,
+        msg.replyToId, msg.isBot ? 1 : 0, msg.isPinned ? 1 : 0, msg.source
+      );
+      if (result.changes > 0) inserted++;
+    }
+  });
+  batch(messages);
+  return inserted;
+}
+
+export interface ChannelFetchProgressRow {
+  channel_id: string;
+  guild_id: string | null;
+  channel_name: string | null;
+  oldest_fetched_id: string | null;
+  newest_fetched_id: string | null;
+  message_count: number;
+  is_complete: number;
+  last_fetched_at: string;
+}
+
+export function getChannelFetchProgress(channelId: string): ChannelFetchProgressRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM channel_fetch_progress WHERE channel_id = ?')
+    .get(channelId) as ChannelFetchProgressRow | undefined;
+}
+
+export function getAllChannelFetchProgress(): ChannelFetchProgressRow[] {
+  return getDb()
+    .prepare('SELECT * FROM channel_fetch_progress ORDER BY last_fetched_at DESC')
+    .all() as ChannelFetchProgressRow[];
+}
+
+export function upsertChannelFetchProgress(progress: {
+  channelId: string;
+  guildId: string | null;
+  channelName: string | null;
+  oldestFetchedId: string | null;
+  newestFetchedId: string | null;
+  messageCount: number;
+  isComplete: boolean;
+}): void {
+  getDb()
+    .prepare(
+      `INSERT INTO channel_fetch_progress
+       (channel_id, guild_id, channel_name, oldest_fetched_id, newest_fetched_id,
+        message_count, is_complete, last_fetched_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(channel_id) DO UPDATE SET
+         channel_name = ?, oldest_fetched_id = ?, newest_fetched_id = ?,
+         message_count = ?, is_complete = ?, last_fetched_at = ?`
+    )
+    .run(
+      progress.channelId, progress.guildId, progress.channelName,
+      progress.oldestFetchedId, progress.newestFetchedId,
+      progress.messageCount, progress.isComplete ? 1 : 0, new Date().toISOString(),
+      progress.channelName, progress.oldestFetchedId, progress.newestFetchedId,
+      progress.messageCount, progress.isComplete ? 1 : 0, new Date().toISOString()
+    );
+}
+
+export function getChannelMessageCount(channelId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) as count FROM channel_messages WHERE channel_id = ?')
+    .get(channelId) as { count: number };
+  return row.count;
+}
+
+export function getChannelMessagesByDateRange(channelId: string, startDate: string, endDate: string): ChannelMessageRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM channel_messages
+       WHERE channel_id = ? AND timestamp >= ? AND timestamp <= ?
+       ORDER BY timestamp`
+    )
+    .all(channelId, startDate, endDate) as ChannelMessageRow[];
+}
+
+export function searchChannelMessages(query: string, options?: {
+  channelId?: string;
+  guildId?: string;
+  authorId?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+}): ChannelMessageRow[] {
+  const conditions = ['content LIKE ?'];
+  const params: unknown[] = [`%${query}%`];
+
+  if (options?.channelId) { conditions.push('channel_id = ?'); params.push(options.channelId); }
+  if (options?.guildId) { conditions.push('guild_id = ?'); params.push(options.guildId); }
+  if (options?.authorId) { conditions.push('author_id = ?'); params.push(options.authorId); }
+  if (options?.startDate) { conditions.push('timestamp >= ?'); params.push(options.startDate); }
+  if (options?.endDate) { conditions.push('timestamp <= ?'); params.push(options.endDate); }
+
+  const limit = options?.limit ?? 100;
+  return getDb()
+    .prepare(
+      `SELECT * FROM channel_messages WHERE ${conditions.join(' AND ')} ORDER BY timestamp LIMIT ?`
+    )
+    .all(...params, limit) as ChannelMessageRow[];
+}
+
+// --- User data deletion ---
+
 export function deleteUserDataInGuild(guildId: string, userId: string): { sessionsAffected: number; segmentsDeleted: number; tracksDeleted: number } {
   const db = getDb();
   let sessionsAffected = 0;

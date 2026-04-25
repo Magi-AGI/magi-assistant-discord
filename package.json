@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "hydrate-audio": "tsx scripts/hydrate-audio.ts",
-    "retranscribe": "tsx scripts/retranscribe.ts"
+    "retranscribe": "tsx scripts/retranscribe.ts",
+    "fetch-history": "tsx scripts/fetch-channel-history.ts"
   },
   "keywords": [
     "discord",

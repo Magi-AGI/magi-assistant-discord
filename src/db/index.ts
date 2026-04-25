@@ -4,7 +4,7 @@ import * as path from 'path';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 let _db: Database.Database | null = null;
 
@@ -79,6 +79,12 @@ function migrate(db: Database.Database): void {
     logger.info('Running migration: version 5 -> 6 (track_parts)');
     db.exec(SCHEMA_V6);
     db.pragma('user_version = 6');
+  }
+
+  if (currentVersion < 7) {
+    logger.info('Running migration: version 6 -> 7 (channel_messages archive)');
+    db.exec(SCHEMA_V7);
+    db.pragma('user_version = 7');
   }
 }
 
@@ -287,4 +293,42 @@ CREATE TABLE track_parts (
     UNIQUE(track_id, part_number)
 );
 CREATE INDEX idx_track_parts_track ON track_parts(track_id);
+`;
+
+const SCHEMA_V7 = `
+-- Channel message archive (full history, independent of sessions)
+CREATE TABLE channel_messages (
+    message_id       TEXT PRIMARY KEY,
+    channel_id       TEXT NOT NULL,
+    channel_name     TEXT,
+    guild_id         TEXT,
+    author_id        TEXT NOT NULL,
+    author_name      TEXT NOT NULL,
+    content          TEXT,
+    timestamp        TEXT NOT NULL,
+    edited_timestamp TEXT,
+    attachments      TEXT,
+    embeds           TEXT,
+    reply_to_id      TEXT,
+    is_bot           INTEGER NOT NULL DEFAULT 0,
+    is_pinned        INTEGER NOT NULL DEFAULT 0,
+    source           TEXT NOT NULL DEFAULT 'api'
+);
+
+CREATE INDEX idx_cm_channel_time ON channel_messages(channel_id, timestamp);
+CREATE INDEX idx_cm_author ON channel_messages(author_id);
+CREATE INDEX idx_cm_timestamp ON channel_messages(timestamp);
+CREATE INDEX idx_cm_guild ON channel_messages(guild_id) WHERE guild_id IS NOT NULL;
+
+-- Tracks incremental fetch state per channel
+CREATE TABLE channel_fetch_progress (
+    channel_id        TEXT PRIMARY KEY,
+    guild_id          TEXT,
+    channel_name      TEXT,
+    oldest_fetched_id TEXT,
+    newest_fetched_id TEXT,
+    message_count     INTEGER NOT NULL DEFAULT 0,
+    is_complete       INTEGER NOT NULL DEFAULT 0,
+    last_fetched_at   TEXT NOT NULL
+);
 `;
