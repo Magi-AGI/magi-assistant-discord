@@ -6,7 +6,6 @@ import {
 } from 'discord.js';
 import { logger } from '../logger.js';
 import { getConfig } from '../config.js';
-import { ffmpegRegistry } from '../stt/process-registry.js';
 
 /**
  * Result of a preflight check. `ok` gates `/session start`.
@@ -91,67 +90,81 @@ function checkFfmpegBinary(timeoutMs = 5_000): Promise<{ ok: boolean; stderr: st
  * then tears it down. This proves the full s16le->resample->s16le pipeline is
  * healthy end-to-end before we commit to a real session.
  */
-async function checkResamplerPipeline(userId: string, timeoutMs = 5_000): Promise<{ ok: boolean; reason: string | null; stderrTail: string }> {
-  // Use a fake sessionId for the preflight key so it doesn't collide with any
-  // real session. Prefix with `__preflight__:` so even log audits can tell.
-  const sessionId = `__preflight__:${Date.now()}`;
-  const resampler = ffmpegRegistry.spawn(userId, sessionId);
-  if (!resampler) {
-    return { ok: false, reason: 'spawn returned null (circuit breaker open?)', stderrTail: '' };
-  }
+async function checkResamplerPipeline(_userId: string, timeoutMs = 5_000): Promise<{ ok: boolean; reason: string | null; stderrTail: string }> {
+  // Spawn a one-shot ffmpeg with the same pipeline shape as FfmpegResampler:
+  // 48kHz stereo s16le → 16kHz mono s16le. We don't use FfmpegResampler here
+  // because that class is built for live streaming (idle watchdog, no
+  // stdin-end semantic). The preflight needs to write a fixed amount of input,
+  // close stdin to trigger libswr's flush, and assert the resampled bytes
+  // appear on stdout — fundamentally a one-shot test.
+  return new Promise((resolve) => {
+    const proc = spawn('ffmpeg', [
+      '-hide_banner', '-loglevel', 'error',
+      '-f', 's16le', '-ar', '48000', '-ac', '2', '-i', 'pipe:0',
+      '-ar', '16000', '-ac', '1', '-f', 's16le', 'pipe:1',
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-  try {
-    // Write 1 second of synthetic silence. We feed raw PCM directly into the
-    // child process stdin via writeRawPcm() (skipping the Opus decode step)
-    // so we don't need to mint valid Opus frames for preflight. This
-    // exercises the ffmpeg resample (48->16) pipe — the piece that
-    // historically died mid-session.
-    //
-    // Why 1 second and not 200ms: ffmpeg's libswr resampler buffers internally
-    // before emitting downsampled output. Smaller writes get held in the
-    // resampling state and never reach pipe:1, causing the preflight to time
-    // out. 1 second of 48 kHz stereo s16le = 192_000 bytes, large enough to
-    // overflow the internal buffer and force at least one block of resampled
-    // PCM out the stdout pipe.
-    const silenceBytes = 48_000 * 1 * 2 * 2;
-    const silence = Buffer.alloc(silenceBytes);
-    const wrote = resampler.writeRawPcm(silence);
-    if (!wrote) {
-      return { ok: false, reason: 'resampler stdin unavailable or write failed', stderrTail: '' };
-    }
+    let stderr = '';
+    let totalOut = 0;
+    let settled = false;
+    const stderrCap = 4096;
 
-    // Read at least a few bytes of PCM back to confirm the pipeline is flowing.
-    // With 1s of input the first output block should land within ~100ms.
-    const gotOutput = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => resolve(false), timeoutMs);
-      const onData = () => {
-        clearTimeout(timer);
-        resampler.pcmOutput.off('data', onData);
-        resolve(true);
-      };
-      resampler.pcmOutput.once('data', onData);
+    const finish = (result: { ok: boolean; reason: string | null; stderrTail: string }): void => {
+      if (settled) return;
+      settled = true;
+      try { proc.kill('SIGTERM'); } catch { /* already dead */ }
+      resolve(result);
+    };
+
+    const timer = setTimeout(() => {
+      finish({
+        ok: false,
+        reason: `no PCM output from resampler within ${timeoutMs}ms`,
+        stderrTail: stderr.slice(-400),
+      });
+    }, timeoutMs);
+
+    proc.stderr?.on('data', (d: Buffer) => {
+      if (stderr.length < stderrCap) stderr += d.toString();
     });
 
-    if (!gotOutput) {
-      return {
-        ok: false,
-        reason: 'no PCM output from resampler within timeout',
-        stderrTail: resampler.exitReason ?? 'pipeline stall',
-      };
-    }
+    proc.stdout?.on('data', (d: Buffer) => {
+      totalOut += d.length;
+      // First non-empty output proves the pipeline is flowing. Don't wait for
+      // exit — that's an extra ~50ms that doesn't add coverage.
+      if (totalOut > 0) {
+        clearTimeout(timer);
+        finish({ ok: true, reason: null, stderrTail: '' });
+      }
+    });
 
-    if (!resampler.alive) {
-      return {
-        ok: false,
-        reason: `resampler exited during preflight: ${resampler.exitReason ?? 'unknown'}`,
-        stderrTail: resampler.exitReason ?? '',
-      };
-    }
+    proc.on('error', (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, reason: `spawn error: ${err.message}`, stderrTail: stderr.slice(-400) });
+    });
 
-    return { ok: true, reason: null, stderrTail: '' };
-  } finally {
-    ffmpegRegistry.kill(userId, sessionId);
-  }
+    proc.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (totalOut > 0) {
+        finish({ ok: true, reason: null, stderrTail: '' });
+      } else {
+        finish({
+          ok: false,
+          reason: `ffmpeg exited (code=${code}, signal=${signal}) with no PCM output`,
+          stderrTail: stderr.slice(-400),
+        });
+      }
+    });
+
+    // 1 second of 48 kHz stereo s16le silence = 192_000 bytes. After writing
+    // we end stdin to signal EOF; without EOF, libswr buffers indefinitely
+    // and waits for more input — which never comes in a one-shot test.
+    const silenceBytes = 48_000 * 1 * 2 * 2;
+    const silence = Buffer.alloc(silenceBytes);
+    proc.stdin?.write(silence, () => {
+      proc.stdin?.end();
+    });
+  });
 }
 
 /**
