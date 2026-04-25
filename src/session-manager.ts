@@ -218,6 +218,10 @@ export async function startSession(
       adapterCreator: guild.voiceAdapterCreator,
       selfDeaf: false,
       selfMute: true,
+      // Defense-in-depth alongside dave-tolerance-patch: never trip the
+      // consecutiveFailures > tolerance throw inside DAVESession.decrypt.
+      // Real DAVE recovery still works because the counter resets on success.
+      decryptionFailureTolerance: 1_000_000,
     });
 
     try {

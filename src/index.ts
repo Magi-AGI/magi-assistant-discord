@@ -17,9 +17,15 @@ import { startRetentionCleanup, stopRetentionCleanup } from './retention.js';
 import { ffmpegRegistry } from './stt/process-registry.js';
 import { destroyAllEngines, setLogger } from '@magi/common';
 import { startMcpServer, stopMcpServer } from './mcp/server.js';
+import { installDaveTolerancePatch } from './voice/dave-tolerance-patch.js';
 
 // Wire the app logger into @magi/common so STT modules use the same logger
 setLogger(logger);
+
+// Patch VoiceReceiver to tolerate DAVE decrypt failures on individual packets
+// instead of destroying the per-user subscription (workaround for
+// discordjs/discord.js#11419). Must run before any joinVoiceChannel call.
+installDaveTolerancePatch();
 
 const config = getConfig();
 
