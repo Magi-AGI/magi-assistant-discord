@@ -1,7 +1,7 @@
 import { config as dotenvConfig } from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AppConfig, GuildConfig, SttConfig, DataRetentionConfig } from './types/index.js';
+import type { AppConfig, GuildConfig, FoundryBridgeConfig, SttConfig, DataRetentionConfig } from './types/index.js';
 import { registerSecret } from './logger.js';
 
 dotenvConfig();
@@ -51,7 +51,38 @@ function validateGuild(guildId: string, data: Record<string, unknown>): GuildCon
       : [],
     gmRoleId: typeof data.gmRoleId === 'string' ? data.gmRoleId : '',
     timezone: typeof data.timezone === 'string' ? data.timezone : 'UTC',
+    foundryBridge: parseFoundryBridge(guildId, data.foundryBridge),
   };
+}
+
+/**
+ * Parse a per-guild `foundryBridge` block. Token is sourced from env, not
+ * config.json — by default `FOUNDRY_BRIDGE_TOKEN`, or the env var named in
+ * `tokenEnv` for multi-bridge setups. config.json carries only mcpUrl, enabled,
+ * and (optionally) tokenEnv.
+ */
+function parseFoundryBridge(guildId: string, raw: unknown): FoundryBridgeConfig | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object') {
+    console.warn(`[WARN] config.json: guilds.${guildId}.foundryBridge must be an object — ignoring`);
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const mcpUrl = typeof obj.mcpUrl === 'string' ? obj.mcpUrl : '';
+  const tokenEnv = typeof obj.tokenEnv === 'string' && obj.tokenEnv.length > 0
+    ? obj.tokenEnv
+    : 'FOUNDRY_BRIDGE_TOKEN';
+  const mcpToken = process.env[tokenEnv] ?? '';
+  const enabled = obj.enabled !== false; // default true when block present
+  if (!mcpUrl) {
+    console.warn(`[WARN] config.json: guilds.${guildId}.foundryBridge requires mcpUrl — ignoring`);
+    return undefined;
+  }
+  if (!mcpToken) {
+    console.warn(`[WARN] guilds.${guildId}.foundryBridge: env var ${tokenEnv} is empty — bridge disabled`);
+    return undefined;
+  }
+  return { mcpUrl, mcpToken, enabled };
 }
 
 let _config: AppConfig | null = null;
@@ -88,6 +119,11 @@ export function getConfig(): AppConfig {
 
   // Register secrets for log redaction
   if (_config.mcpAuthToken) registerSecret(_config.mcpAuthToken);
+  for (const guildConfig of Object.values(_config.guilds)) {
+    if (guildConfig.foundryBridge?.mcpToken) {
+      registerSecret(guildConfig.foundryBridge.mcpToken);
+    }
+  }
 
   return _config;
 }

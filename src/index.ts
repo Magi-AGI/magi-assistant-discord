@@ -17,6 +17,7 @@ import { startRetentionCleanup, stopRetentionCleanup } from './retention.js';
 import { ffmpegRegistry } from './stt/process-registry.js';
 import { destroyAllEngines, setLogger } from '@magi/common';
 import { startMcpServer, stopMcpServer } from './mcp/server.js';
+import { shutdownAllBridges } from './mcp-clients/foundry-bridge.js';
 import { installDaveTolerancePatch } from './voice/dave-tolerance-patch.js';
 
 // Wire the app logger into @magi/common so STT modules use the same logger
@@ -76,6 +77,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // (e.g., due to an uncaught error in a session teardown path)
     destroyAllEngines();
     stopMcpServer();
+    await shutdownAllBridges();
     stopRetentionCleanup();
     stopMonitoring();
     client.destroy();

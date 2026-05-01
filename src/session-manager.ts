@@ -40,6 +40,7 @@ import type { SttProcessor } from './stt/stt-processor.js';
 import type { TranscriptWriter } from './stt/transcript-writer.js';
 import type { SttUsageTracker } from './stt/usage-tracker.js';
 import type { LiveTranscriptManager } from './mcp/live-subscriptions.js';
+import { notifyRecordingStart, notifyRecordingStop } from './mcp-clients/foundry-bridge.js';
 
 /** Runtime state for an active recording session. */
 export interface ActiveSession {
@@ -519,6 +520,10 @@ export async function startSession(
       `Recording session started in **${voiceChannel.name}** with ${participantCount} participant(s).\nSession ID: \`${sessionId}\``
     );
 
+    // Best-effort: kick off Foundry recording for guilds that have a bridge configured.
+    // Runs after editReply so MCP latency never blocks the user-facing response.
+    void notifyRecordingStart(guild.id, guildConfig?.foundryBridge, `Discord session ${sessionId} started`);
+
     // Clear cached preflight so the next session has to re-verify.
     _cp(guild.id);
     logger.info(`Session ${sessionId} started in guild ${guild.id}, voice channel ${voiceChannel.name}`);
@@ -619,6 +624,10 @@ export async function stopSession(
     `**Session ID:** \`${session.id}\`\n\n` +
     `> Raw audio files contain speech only. Run \`npm run hydrate-audio ${session.id}\` to generate listenable files with silence gaps restored.`
   );
+
+  // Best-effort: tell the Foundry sidecar to stop recording for this guild.
+  const stopGuildConfig = getConfig().guilds[guild.id];
+  void notifyRecordingStop(guild.id, stopGuildConfig?.foundryBridge, `Discord session ${session.id} stopped (${durationStr})`);
 
   logger.info(`Session ${session.id} stopped. Duration: ${durationStr}, Tracks: ${tracks.length}`);
 }
@@ -903,6 +912,11 @@ export async function shutdownAllSessions(client?: Client): Promise<void> {
         session.connection.destroy();
         endSession(session.id, now, 'stopped');
         dbEnded = true;
+
+        // Best-effort: stop Foundry recording for this guild.
+        const shutdownGuildConfig = getConfig().guilds[guildId];
+        void notifyRecordingStop(guildId, shutdownGuildConfig?.foundryBridge, `Discord shutdown — session ${session.id}`);
+
         logger.info(`Shutdown: stopped session ${session.id} in guild ${guildId}`);
       } finally {
         if (!dbEnded) {
@@ -985,6 +999,10 @@ export async function forceEndSession(guildId: string, client: Client, reason: s
 
     // Notify the GM via channel message
     await notifyDisconnect(client, session);
+
+    // Best-effort: stop Foundry recording for this guild.
+    const forceGuildConfig = getConfig().guilds[guildId];
+    void notifyRecordingStop(guildId, forceGuildConfig?.foundryBridge, `Discord session ${session.id} force-ended (${reason})`);
 
     logger.info(`Session ${session.id} force-ended: ${reason}`);
   } finally {

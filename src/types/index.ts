@@ -1,10 +1,26 @@
 export type { SttConfig } from '@magi/common';
 import type { SttConfig } from '@magi/common';
 
+export interface FoundryBridgeConfig {
+  /** Base URL of the foundry-bridge MCP SSE endpoint (e.g. http://127.0.0.1:3003/sse). */
+  mcpUrl: string;
+  /**
+   * Bearer token for the foundry-bridge MCP server. Sourced from env at config-load
+   * time (default env var: FOUNDRY_BRIDGE_TOKEN; override per-guild via `tokenEnv`
+   * in config.json). Never read from config.json directly to keep secrets out of
+   * the file.
+   */
+  mcpToken: string;
+  /** When false, this guild's lifecycle never touches Foundry recording. */
+  enabled: boolean;
+}
+
 export interface GuildConfig {
   textChannels: string[];
   gmRoleId: string;
   timezone: string;
+  /** When set, /session start/stop will drive Foundry video recording for this guild. */
+  foundryBridge?: FoundryBridgeConfig;
 }
 
 export interface DataRetentionConfig {
