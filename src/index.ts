@@ -18,6 +18,7 @@ import { ffmpegRegistry } from './stt/process-registry.js';
 import { destroyAllEngines, setLogger } from '@magi/common';
 import { startMcpServer, stopMcpServer } from './mcp/server.js';
 import { shutdownAllBridges } from './mcp-clients/foundry-bridge.js';
+import { startBridgeFailureNotifier } from './notifications/bridge-failures.js';
 import { installDaveTolerancePatch } from './voice/dave-tolerance-patch.js';
 
 // Wire the app logger into @magi/common so STT modules use the same logger
@@ -120,6 +121,7 @@ async function main(): Promise<void> {
   startMonitoring();
   startRetentionCleanup();
   await startMcpServer(client);
+  startBridgeFailureNotifier(client);
 
   client.once(Events.ClientReady, (readyClient) => {
     logger.info(`Bot online as ${readyClient.user.tag}`);
