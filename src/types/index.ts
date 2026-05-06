@@ -2,7 +2,7 @@ export type { SttConfig } from '@magi/common';
 import type { SttConfig } from '@magi/common';
 
 export interface FoundryBridgeConfig {
-  /** Base URL of the foundry-bridge MCP SSE endpoint (e.g. http://127.0.0.1:3003/sse). */
+  /** Base URL of the foundry-bridge MCP StreamableHTTP endpoint (e.g. http://127.0.0.1:3002/mcp). */
   mcpUrl: string;
   /**
    * Bearer token for the foundry-bridge MCP server. Sourced from env at config-load

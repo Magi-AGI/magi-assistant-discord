@@ -14,14 +14,14 @@
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { logger } from '../logger.js';
 import type { FoundryBridgeConfig } from '../types/index.js';
 
 interface BridgeEntry {
   config: FoundryBridgeConfig;
   client: Client | null;
-  transport: SSEClientTransport | null;
+  transport: StreamableHTTPClientTransport | null;
   /** In-flight connect promise, so concurrent callers share one attempt. */
   connecting: Promise<Client> | null;
 }
@@ -30,6 +30,31 @@ const bridges = new Map<string, BridgeEntry>();
 
 /** Tool-call timeout. Foundry sidecar does its own 5s correlation-id wait — leave headroom. */
 const FOUNDRY_TOOL_TIMEOUT_MS = 8_000;
+
+/**
+ * Failure event emitted whenever a fire-and-forget bridge call fails. Subscribers
+ * (e.g. the Discord-channel notifier) can surface these without coupling the
+ * bridge layer to Discord.
+ */
+export type BridgeFailureCause = 'unreachable' | 'tool-error' | 'tool-threw';
+export type BridgeFailureOp = 'recording_start' | 'recording_stop';
+export interface BridgeFailure {
+  guildId: string;
+  op: BridgeFailureOp;
+  cause: BridgeFailureCause;
+  message: string;
+}
+type BridgeFailureHandler = (event: BridgeFailure) => void;
+const failureHandlers = new Set<BridgeFailureHandler>();
+export function onBridgeFailure(handler: BridgeFailureHandler): () => void {
+  failureHandlers.add(handler);
+  return () => { failureHandlers.delete(handler); };
+}
+function emitFailure(event: BridgeFailure): void {
+  for (const h of failureHandlers) {
+    try { h(event); } catch (err) { logger.debug('bridge failure handler threw:', err); }
+  }
+}
 
 function getEntry(guildId: string, config: FoundryBridgeConfig): BridgeEntry {
   let entry = bridges.get(guildId);
@@ -54,19 +79,9 @@ async function connect(entry: BridgeEntry): Promise<Client> {
   entry.connecting = (async (): Promise<Client> => {
     const url = new URL(entry.config.mcpUrl);
     const headers = { Authorization: `Bearer ${entry.config.mcpToken}` };
-    // EventSource doesn't expose a way to send custom headers in Node's
-    // built-in implementation, so we fall back to the query-token mode the
-    // foundry-bridge server accepts on GET /sse. POST /messages still gets
-    // the Authorization header via requestInit.
-    if (!url.searchParams.has('token')) {
-      url.searchParams.set('token', entry.config.mcpToken);
-    }
 
-    const transport = new SSEClientTransport(url, {
+    const transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers },
-      eventSourceInit: {
-        fetch: (input, init) => fetch(input as URL, { ...init, headers: { ...(init?.headers ?? {}), ...headers } }),
-      },
     });
 
     const client = new Client(
@@ -117,7 +132,9 @@ async function callRecording(
   try {
     client = await connect(entry);
   } catch (err) {
-    logger.warn(`Foundry bridge: connect failed for guild ${guildId} — ${describe(err)}`);
+    const message = describe(err);
+    logger.warn(`Foundry bridge: connect failed for guild ${guildId} — ${message}`);
+    emitFailure({ guildId, op: toolName, cause: 'unreachable', message });
     return;
   }
 
@@ -130,11 +147,14 @@ async function callRecording(
     if ('isError' in result && result.isError) {
       const text = extractText(result);
       logger.warn(`Foundry bridge: ${toolName} returned error for guild ${guildId}: ${text}`);
+      emitFailure({ guildId, op: toolName, cause: 'tool-error', message: text });
       return;
     }
     logger.info(`Foundry bridge: ${toolName} ok for guild ${guildId} (${reason})`);
   } catch (err) {
-    logger.warn(`Foundry bridge: ${toolName} threw for guild ${guildId} — ${describe(err)}`);
+    const message = describe(err);
+    logger.warn(`Foundry bridge: ${toolName} threw for guild ${guildId} — ${message}`);
+    emitFailure({ guildId, op: toolName, cause: 'tool-threw', message });
     // Drop the client on hard failure so the next call reconnects.
     await closeBridge(guildId, 'tool call failed');
   }
