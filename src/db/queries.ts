@@ -213,6 +213,53 @@ export function getTrackBursts(trackId: number): SpeechBurstRow[] {
     .all(trackId) as SpeechBurstRow[];
 }
 
+// --- Track gap queries ---
+
+export interface TrackGapRow {
+  id: number;
+  track_id: number;
+  gap_start: string;
+  gap_end: string | null;
+  reason: string;
+  start_frame_offset: number;
+  end_frame_offset: number | null;
+}
+
+export function insertGap(gap: {
+  trackId: number;
+  gapStart: string;
+  reason: string;
+  startFrameOffset: number;
+}): number {
+  const result = getDb()
+    .prepare(
+      `INSERT INTO audio_track_gaps (track_id, gap_start, reason, start_frame_offset)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(gap.trackId, gap.gapStart, gap.reason, gap.startFrameOffset);
+  return Number(result.lastInsertRowid);
+}
+
+export function closeGap(gapId: number, gapEnd: string, endFrameOffset: number): void {
+  getDb()
+    .prepare(
+      'UPDATE audio_track_gaps SET gap_end = ?, end_frame_offset = ? WHERE id = ?'
+    )
+    .run(gapEnd, endFrameOffset, gapId);
+}
+
+export function getOpenGap(trackId: number): TrackGapRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM audio_track_gaps WHERE track_id = ? AND gap_end IS NULL')
+    .get(trackId) as TrackGapRow | undefined;
+}
+
+export function getTrackGaps(trackId: number): TrackGapRow[] {
+  return getDb()
+    .prepare('SELECT * FROM audio_track_gaps WHERE track_id = ? ORDER BY gap_start')
+    .all(trackId) as TrackGapRow[];
+}
+
 // --- Text event queries ---
 
 export interface TextEventRow {
@@ -637,9 +684,12 @@ export function deleteSessionCascade(sessionId: string): void {
     db.prepare('DELETE FROM speaker_mappings WHERE session_id = ?').run(sessionId);
     db.prepare('DELETE FROM stt_usage WHERE session_id = ?').run(sessionId);
     db.prepare('DELETE FROM text_events WHERE session_id = ?').run(sessionId);
-    // Delete speech bursts for this session's tracks
+    // Delete speech bursts and gaps for this session's tracks
     db.prepare(
       'DELETE FROM audio_speech_bursts WHERE track_id IN (SELECT id FROM audio_tracks WHERE session_id = ?)'
+    ).run(sessionId);
+    db.prepare(
+      'DELETE FROM audio_track_gaps WHERE track_id IN (SELECT id FROM audio_tracks WHERE session_id = ?)'
     ).run(sessionId);
     db.prepare('DELETE FROM audio_tracks WHERE session_id = ?').run(sessionId);
     db.prepare('DELETE FROM participants WHERE session_id = ?').run(sessionId);
@@ -672,6 +722,7 @@ export function deleteUserDataInGuild(guildId: string, userId: string): { sessio
         .all(sid, userId) as { id: number }[];
       for (const t of trackIds) {
         db.prepare('DELETE FROM audio_speech_bursts WHERE track_id = ?').run(t.id);
+        db.prepare('DELETE FROM audio_track_gaps WHERE track_id = ?').run(t.id);
       }
       const trackResult = db.prepare('DELETE FROM audio_tracks WHERE session_id = ? AND user_id = ?').run(sid, userId);
       tracksDeleted += trackResult.changes;

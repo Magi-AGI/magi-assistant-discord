@@ -4,6 +4,8 @@ import { logger } from '../logger.js';
 import {
   insertBurst,
   closeBurst,
+  insertGap,
+  closeGap,
 } from '../db/queries.js';
 import type { SessionRecorder, UserTrack } from './recorder.js';
 
@@ -12,6 +14,12 @@ interface UserBurstState {
   burstId: number;
   openedAt: number; // Date.now() for max duration check
   checkTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** Tracks open gap IDs per user (one open gap per active track). */
+interface UserGapState {
+  gapId: number;
+  trackId: number;
 }
 
 /**
@@ -26,6 +34,7 @@ export class BurstTracker {
   private recorder: SessionRecorder;
   private receiver: VoiceReceiver;
   private bursts = new Map<string, UserBurstState>();
+  private gaps = new Map<string, UserGapState>();
   private maxBurstMs: number;
   private destroyed = false;
 
@@ -161,12 +170,82 @@ export class BurstTracker {
     this.closeBurstState(userId, state, frameOffset);
   }
 
-  /** Close all open bursts (session stop or shutdown). */
+  /**
+   * Open a gap marker for a user whose track is being held open across a
+   * transient voice-state event. First closes any open speech burst (the
+   * user is no longer speaking — at least not into us). The track itself
+   * keeps recording: hydrate-audio's anchor-based silence padding handles
+   * the audible gap in the output, and the gap row preserves metadata so
+   * downstream tools can distinguish AFK silence from disconnect silence.
+   *
+   * No-op if a gap is already open for this user (idempotent against
+   * duplicate voiceStateUpdate emissions) or if the user has no active track.
+   */
+  openGap(userId: string, reason: string): void {
+    if (this.destroyed) return;
+    if (this.gaps.has(userId)) return;
+
+    const track = this.recorder.getTrack(userId);
+    if (!track) {
+      logger.debug(`openGap for user ${userId} but no active track`);
+      return;
+    }
+
+    // Close any open speech burst before opening the gap.
+    const burstState = this.bursts.get(userId);
+    if (burstState) {
+      this.closeBurstState(userId, burstState, track.frameCount);
+    }
+
+    const gapId = insertGap({
+      trackId: track.trackId,
+      gapStart: new Date().toISOString(),
+      reason,
+      startFrameOffset: track.frameCount,
+    });
+    this.gaps.set(userId, { gapId, trackId: track.trackId });
+
+    logger.info(
+      `Session ${this.sessionId}: opened gap ${gapId} for user ${userId} ` +
+      `(track ${track.trackId}, frame ${track.frameCount}, reason: ${reason})`
+    );
+  }
+
+  /**
+   * Close an open gap for a user (e.g., on rejoin within the grace window or
+   * on session teardown). No-op if no gap is open. Uses the current frame
+   * count of the still-open track if available, otherwise the frame offset
+   * captured at gap-open time (the track was closed mid-grace).
+   */
+  closeGap(userId: string): void {
+    const state = this.gaps.get(userId);
+    if (!state) return;
+
+    const track = this.recorder.getTrack(userId);
+    const frameOffset = track ? track.frameCount : 0;
+    closeGap(state.gapId, new Date().toISOString(), frameOffset);
+    this.gaps.delete(userId);
+
+    logger.info(
+      `Session ${this.sessionId}: closed gap ${state.gapId} for user ${userId} ` +
+      `(track ${state.trackId}, frame ${frameOffset})`
+    );
+  }
+
+  /** Whether a gap is currently open for the given user. */
+  hasOpenGap(userId: string): boolean {
+    return this.gaps.has(userId);
+  }
+
+  /** Close all open bursts AND open gaps (session stop or shutdown). */
   closeAll(): void {
     for (const [userId, state] of this.bursts) {
       const track = this.recorder.getTrack(userId);
       const frameOffset = track ? track.frameCount : 0;
       this.closeBurstState(userId, state, frameOffset);
+    }
+    for (const userId of [...this.gaps.keys()]) {
+      this.closeGap(userId);
     }
   }
 
