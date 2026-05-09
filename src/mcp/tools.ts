@@ -43,16 +43,27 @@ export function registerTools(server: McpServer, client?: Client): void {
     }
   );
 
-  // get_session_timeline — interleaved chronological view
+  // get_session_timeline — interleaved chronological view.
+  // Default behavior (includeInterim=false) is unchanged: only is_final=1
+  // transcript rows are returned. Setting includeInterim=true also returns
+  // pre-final emissions so callers can compare full vs final-only metrics
+  // (used by the GM-side post-session QA report — see #36 + Pattern 40).
   server.registerTool(
     'get_session_timeline',
     {
-      description: 'Get an interleaved chronological view of transcripts and text events',
+      description:
+        'Get an interleaved chronological view of transcripts and text events. ' +
+        'By default returns only finalized transcript segments; pass includeInterim=true ' +
+        'to also return pre-final emissions (each row carries an isFinal flag).',
       inputSchema: {
         sessionId: z.string().describe('Session ID'),
+        includeInterim: z
+          .boolean()
+          .optional()
+          .describe('When true, include is_final=0 transcript rows alongside finals (default false).'),
       },
     },
-    async ({ sessionId }) => {
+    async ({ sessionId, includeInterim = false }) => {
       const transcripts = getSessionTranscripts(sessionId);
       const textEvents = getSessionTextEvents(sessionId);
 
@@ -62,16 +73,22 @@ export function registerTools(server: McpServer, client?: Client): void {
         userId: string | null;
         displayName: string | null;
         content: string | null;
+        /** Transcript-only: end timestamp (used by callers computing time-weighted metrics). */
+        segmentEnd?: string | null;
+        /** Transcript-only: true if is_final=1. Always true for text events. */
+        isFinal?: boolean;
       }> = [];
 
       for (const t of transcripts) {
-        if (!t.is_final) continue;
+        if (!includeInterim && !t.is_final) continue;
         timeline.push({
           type: 'transcript',
           timestamp: t.segment_start,
+          segmentEnd: t.segment_end,
           userId: t.user_id,
           displayName: t.display_name,
           content: t.transcript,
+          isFinal: t.is_final === 1,
         });
       }
 
