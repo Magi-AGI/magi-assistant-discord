@@ -37,6 +37,15 @@ export interface AppConfig {
   diskWarningThresholdMB: number;
   eventLoopLagThresholdMs: number;
   maxBurstDurationMinutes: number;
+  /**
+   * Grace period before a per-user audio pipeline is torn down after a
+   * voiceStateUpdate that looks like the user left. Discord's gateway emits
+   * a leave (channelId=null) for transient internet hiccups even when the
+   * user has not actually departed, so we hold the track open for this long
+   * to avoid producing a multi-minute gap and a brand-new track ID on rejoin.
+   * Default 300_000 (5 minutes).
+   */
+  voiceRejoinGraceMs: number;
   guilds: Record<string, GuildConfig>;
   stt: SttConfig;
   dataRetention: DataRetentionConfig;

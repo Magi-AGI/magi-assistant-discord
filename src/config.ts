@@ -110,6 +110,7 @@ export function getConfig(): AppConfig {
     diskWarningThresholdMB: validatePositiveNumber(file.diskWarningThresholdMB, 'diskWarningThresholdMB', 500),
     eventLoopLagThresholdMs: validatePositiveNumber(file.eventLoopLagThresholdMs, 'eventLoopLagThresholdMs', 100),
     maxBurstDurationMinutes: validatePositiveNumber(file.maxBurstDurationMinutes, 'maxBurstDurationMinutes', 10),
+    voiceRejoinGraceMs: validatePositiveNumber(file.voiceRejoinGraceMs, 'voiceRejoinGraceMs', 300_000),
     guilds,
     stt,
     dataRetention,

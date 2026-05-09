@@ -2,7 +2,8 @@ import { type Client, Events, type VoiceState } from 'discord.js';
 import { logger } from '../logger.js';
 import {
   getActiveSessionForGuild,
-  teardownUserInSession,
+  scheduleUserRejoinGrace,
+  cancelUserRejoinGrace,
   type ActiveSession,
 } from '../session-manager.js';
 import { insertParticipant, isConsentRequired, getConsent } from '../db/queries.js';
@@ -55,6 +56,17 @@ export function registerLateJoinHandler(client: Client): void {
 
     // Skip bots
     if (newState.member?.user.bot) return;
+
+    // Rejoin within the grace window: cancel the pending teardown and reuse
+    // the existing audio track. No DM, no new participant row, no new
+    // trackId — the disconnect was treated as transient. The recorder's
+    // speaking.start auto-rebind will re-attach the receiver subscription
+    // when the user starts talking again.
+    if (cancelUserRejoinGrace(session, userId)) {
+      const displayName = newState.member?.displayName ?? userId;
+      logger.info(`Late-join handler: ${displayName} (${userId}) rejoined within grace window for session ${session.id} — track preserved`);
+      return;
+    }
 
     // Dedup: don't notify/subscribe if already handled
     if (session.notifiedUsers.has(userId)) return;
@@ -137,9 +149,15 @@ function handleUserLeave(oldState: VoiceState): void {
   const userId = oldState.id;
   if (oldState.member?.user.bot) return;
 
+  // Don't teardown immediately. Discord's gateway emits this event for
+  // transient internet hiccups too (BG Session 9 incident, #30). Open a
+  // rejoin-grace window: if the user reconnects within voiceRejoinGraceMs,
+  // the existing audio track is preserved; otherwise the timer fires the
+  // standard teardown.
+  if (!session.notifiedUsers.has(userId)) return; // user wasn't being recorded
+
   const displayName = oldState.member?.displayName ?? userId;
-  teardownUserInSession(session, userId);
-  logger.info(`User left: ${displayName} (${userId}) left session ${session.id}`);
+  scheduleUserRejoinGrace(session, userId, displayName, 'voiceStateUpdate leave');
 }
 
 async function notifyLateJoiner(voiceState: VoiceState, session: ActiveSession): Promise<void> {

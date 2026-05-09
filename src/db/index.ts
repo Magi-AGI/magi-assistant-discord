@@ -4,7 +4,7 @@ import * as path from 'path';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 
-const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_VERSION = 7;
 
 let _db: Database.Database | null = null;
 
@@ -79,6 +79,12 @@ function migrate(db: Database.Database): void {
     logger.info('Running migration: version 5 -> 6 (track_parts)');
     db.exec(SCHEMA_V6);
     db.pragma('user_version = 6');
+  }
+
+  if (currentVersion < 7) {
+    logger.info('Running migration: version 6 -> 7 (audio_track_gaps)');
+    db.exec(SCHEMA_V7);
+    db.pragma('user_version = 7');
   }
 }
 
@@ -287,4 +293,24 @@ CREATE TABLE track_parts (
     UNIQUE(track_id, part_number)
 );
 CREATE INDEX idx_track_parts_track ON track_parts(track_id);
+`;
+
+const SCHEMA_V7 = `
+-- Track-level gap markers. Recorded when a per-user audio pipeline is held open
+-- across a transient voice-state event (e.g., a Discord gateway hiccup that
+-- emits voiceStateUpdate with channelId=null but the user has not actually
+-- left). Hydrate-audio's anchor-based silence padding handles the audible gap;
+-- these rows preserve the metadata so downstream tools can distinguish AFK
+-- silence from disconnect silence.
+CREATE TABLE audio_track_gaps (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    track_id            INTEGER NOT NULL REFERENCES audio_tracks(id),
+    gap_start           TEXT NOT NULL,
+    gap_end             TEXT,
+    reason              TEXT NOT NULL,
+    start_frame_offset  INTEGER NOT NULL,
+    end_frame_offset    INTEGER
+);
+CREATE INDEX idx_audio_track_gaps_track ON audio_track_gaps(track_id);
+CREATE UNIQUE INDEX idx_audio_track_gaps_one_open ON audio_track_gaps(track_id) WHERE gap_end IS NULL;
 `;

@@ -67,8 +67,24 @@ export interface ActiveSession {
   usageTracker: SttUsageTracker | null;
   liveTranscripts: LiveTranscriptManager | null;
   resyncTimer: ReturnType<typeof setInterval> | null;
+  /**
+   * Per-user grace timers for transient voice-state events. When Discord's
+   * gateway emits a leave for a user (channelId=null), we open a gap on the
+   * user's audio track and schedule teardown for `voiceRejoinGraceMs` later
+   * instead of tearing down immediately. If the user reconnects before the
+   * timer fires, we cancel teardown and close the gap — preserving the same
+   * track ID across the disconnect (#30).
+   */
+  pendingRejoinTimers: Map<string, PendingRejoin>;
   /** Set at start of teardown to prevent in-flight resync callbacks from mutating state. */
   tearingDown: boolean;
+}
+
+/** State held while a user is in the rejoin-grace window. */
+interface PendingRejoin {
+  timer: ReturnType<typeof setTimeout>;
+  displayName: string;
+  startedAt: number; // Date.now() when the grace was opened
 }
 
 // One active session per guild
@@ -268,6 +284,7 @@ export async function startSession(
       usageTracker: null,
       liveTranscripts: null,
       resyncTimer: null,
+      pendingRejoinTimers: new Map(),
       tearingDown: false,
     };
 
@@ -562,6 +579,10 @@ export async function stopSession(
       session.resyncTimer = null;
     }
 
+    // Cancel any pending rejoin-grace timers and close their open gaps.
+    // Must happen before burstTracker.destroy() so the gap rows get end frames.
+    clearAllPendingRejoinTimers(session);
+
     // Destroy live transcripts and STT processor (destroy emits final speechDuration)
     session.liveTranscripts?.destroy();
     session.sttProcessor?.destroy();
@@ -684,10 +705,136 @@ export async function sessionStatus(
 // --- Helpers ---
 
 /**
+ * Schedule a rejoin-grace window for a user whose voice-state went away.
+ *
+ * Discord's gateway emits voiceStateUpdate with channelId=null during transient
+ * internet hiccups for users who have not actually left. Tearing down the
+ * audio pipeline immediately produces a multi-minute gap and a brand-new
+ * track ID on rejoin (the 2026-05-02 BG Session 9 incident, see #30). To
+ * survive these events we:
+ *
+ *   - Open a gap marker on the user's current audio track (closes any
+ *     in-flight speech burst as a side effect).
+ *   - Keep the audio track, ffmpeg resampler, and STT processor alive but
+ *     idle — no input arrives until the user returns.
+ *   - Schedule a setTimeout for `voiceRejoinGraceMs` that performs the
+ *     actual teardown if the user has not reconnected.
+ *
+ * If the user reconnects to the same voice channel before the timer fires
+ * (handled by late-join.ts), `cancelUserRejoinGrace` is called instead and
+ * the gap is closed cleanly. The track ID is preserved across the gap.
+ *
+ * Idempotent: a second call for the same user is a no-op while a grace is
+ * already pending. Safe to call when no track exists (no-op via burst tracker).
+ */
+export function scheduleUserRejoinGrace(
+  session: ActiveSession,
+  userId: string,
+  displayName: string,
+  reason: string,
+): void {
+  if (session.tearingDown) return;
+  if (session.pendingRejoinTimers.has(userId)) return;
+
+  const graceMs = getConfig().voiceRejoinGraceMs;
+  session.burstTracker.openGap(userId, reason);
+
+  const timer = setTimeout(() => {
+    // Timer fired: user did not return within the grace window.
+    if (session.tearingDown) return;
+    if (!session.pendingRejoinTimers.has(userId)) return; // already cancelled
+    finalizeUserDeparture(session, userId);
+  }, graceMs);
+  // Don't keep the event loop alive solely for a grace timer.
+  if (typeof timer === 'object' && timer !== null && 'unref' in timer && typeof (timer as { unref?: () => unknown }).unref === 'function') {
+    (timer as { unref: () => unknown }).unref();
+  }
+
+  session.pendingRejoinTimers.set(userId, {
+    timer,
+    displayName,
+    startedAt: Date.now(),
+  });
+
+  logger.info(
+    `Session ${session.id}: scheduled ${graceMs}ms rejoin grace for ${displayName} (${userId}) — reason: ${reason}`
+  );
+}
+
+/**
+ * Cancel a pending rejoin-grace timer (user reconnected within the window).
+ * Closes the open gap and leaves the existing audio track untouched.
+ * Returns true if a grace was pending; false if there was no grace to cancel.
+ */
+export function cancelUserRejoinGrace(session: ActiveSession, userId: string): boolean {
+  const pending = session.pendingRejoinTimers.get(userId);
+  if (!pending) return false;
+
+  clearTimeout(pending.timer);
+  session.pendingRejoinTimers.delete(userId);
+  session.burstTracker.closeGap(userId);
+
+  const elapsed = Date.now() - pending.startedAt;
+  logger.info(
+    `Session ${session.id}: cancelled rejoin grace for ${pending.displayName} (${userId}) after ${elapsed}ms — track preserved`
+  );
+  return true;
+}
+
+/**
+ * Finalize a user's departure: close their open gap, then run the standard
+ * per-user teardown. Used both by the grace timer (user did not return) and
+ * by stopSession/forceEndSession/shutdownAllSessions paths.
+ */
+function finalizeUserDeparture(session: ActiveSession, userId: string): void {
+  const pending = session.pendingRejoinTimers.get(userId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    session.pendingRejoinTimers.delete(userId);
+  }
+  // Close the gap before the track is closed so end_frame_offset is meaningful.
+  session.burstTracker.closeGap(userId);
+
+  if (pending) {
+    logger.info(
+      `Session ${session.id}: rejoin grace expired for ${pending.displayName} (${userId}) — tearing down`
+    );
+  }
+  teardownUserInSession(session, userId);
+}
+
+/**
+ * Cancel every pending rejoin-grace timer for a session (used during
+ * stopSession/forceEndSession/shutdownAllSessions). Closes any open gaps
+ * via the burst tracker — does NOT teardown per-user state, since the
+ * caller is about to do that en masse via closeAll() / kill().
+ */
+export function clearAllPendingRejoinTimers(session: ActiveSession): void {
+  for (const [userId, pending] of session.pendingRejoinTimers) {
+    clearTimeout(pending.timer);
+    session.burstTracker.closeGap(userId);
+  }
+  session.pendingRejoinTimers.clear();
+}
+
+/**
  * Tear down all recording/STT state for a single user leaving a session.
- * Shared by late-join handler, resync heartbeat, and consent revoke.
+ * Shared by late-join handler, resync heartbeat, consent revoke, and the
+ * rejoin-grace finalizer. Idempotent against pending grace state — any open
+ * gap or pending timer is cancelled first so callers don't have to coordinate.
  */
 export function teardownUserInSession(session: ActiveSession, userId: string): void {
+  // Defensive: if a grace timer is still pending for this user (e.g., consent
+  // was revoked mid-grace), cancel it now to avoid a delayed double-teardown.
+  const pending = session.pendingRejoinTimers.get(userId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    session.pendingRejoinTimers.delete(userId);
+  }
+  if (session.burstTracker.hasOpenGap(userId)) {
+    session.burstTracker.closeGap(userId);
+  }
+
   // Remove from STT processor before killing ffmpeg
   if (session.sttProcessor) {
     if (!session.diarized || userId === session.gmUserId) {
@@ -773,6 +920,15 @@ async function resyncVoiceMembers(session: ActiveSession, client: Client): Promi
         if (!consent || consent.consented !== 1) continue;
       }
 
+      // If a rejoin-grace is pending, the user briefly looked gone but is
+      // back in the channel — cancel the grace and reuse the existing track.
+      // No new participant insert, no new track ID, no resubscribe needed
+      // (the speaking.start auto-rebind in SessionRecorder handles it).
+      if (cancelUserRejoinGrace(session, userId)) {
+        logger.info(`Resync: cancelled pending rejoin-grace for user ${userId} in session ${session.id}`);
+        continue;
+      }
+
       // Skip if already tracked
       if (session.notifiedUsers.has(userId)) continue;
 
@@ -814,8 +970,14 @@ async function resyncVoiceMembers(session: ActiveSession, client: Client): Promi
     for (const userId of [...session.notifiedUsers]) {
       if (currentVoiceUserIds.has(userId)) continue;
 
-      logger.info(`Resync: user ${userId} left voice channel (missed leave event), cleaning up in session ${session.id}`);
-      teardownUserInSession(session, userId);
+      // If a grace timer is already pending for this user, the leave is being
+      // handled — don't race it from here. The timer will finalize teardown
+      // if the user does not return within voiceRejoinGraceMs.
+      if (session.pendingRejoinTimers.has(userId)) continue;
+
+      logger.info(`Resync: user ${userId} left voice channel (missed leave event), opening rejoin grace in session ${session.id}`);
+      const displayName = guild.members.cache.get(userId)?.displayName ?? userId;
+      scheduleUserRejoinGrace(session, userId, displayName, 'missed leave detected by resync');
     }
   } catch (err) {
     logger.debug('Resync: could not fetch voice channel members:', err);
@@ -877,6 +1039,9 @@ export async function shutdownAllSessions(client?: Client): Promise<void> {
           clearInterval(session.resyncTimer);
           session.resyncTimer = null;
         }
+
+        // Cancel any pending rejoin-grace timers and close their open gaps.
+        clearAllPendingRejoinTimers(session);
 
         // Destroy STT processor (destroy emits final speechDuration)
         session.sttProcessor?.destroy();
@@ -950,6 +1115,9 @@ export async function forceEndSession(guildId: string, client: Client, reason: s
       clearInterval(session.resyncTimer);
       session.resyncTimer = null;
     }
+
+    // Cancel any pending rejoin-grace timers and close their open gaps.
+    clearAllPendingRejoinTimers(session);
 
     // Destroy live transcripts and STT processor (destroy emits final speechDuration)
     session.liveTranscripts?.destroy();
