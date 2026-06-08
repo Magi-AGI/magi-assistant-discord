@@ -407,12 +407,13 @@ export async function startSession(
         const liveTranscripts = new LiveTranscriptManager(config.stt.interimThrottlePerSecond);
         session.liveTranscripts = liveTranscripts;
 
-        // Wire live transcripts to MCP server for resource-updated notifications
-        const { getMcpServer } = await import('./mcp/server.js');
+        // Wire live transcripts to MCP server for resource-updated notifications.
+        // Broadcasts over the registry so every connected client is notified.
+        const { getMcpServerRegistry } = await import('./mcp/server.js');
         const { wireLiveTranscripts } = await import('./mcp/resources.js');
-        const mcpSrv = getMcpServer();
-        if (mcpSrv) {
-          wireLiveTranscripts(mcpSrv, sessionId, liveTranscripts);
+        const mcpRegistry = getMcpServerRegistry();
+        if (mcpRegistry) {
+          wireLiveTranscripts(mcpRegistry, sessionId, liveTranscripts);
         }
 
         // Register track IDs and display names for burst mapping + attribution
