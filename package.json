@@ -9,7 +9,8 @@
     "dev": "tsx src/index.ts",
     "hydrate-audio": "tsx scripts/hydrate-audio.ts",
     "retranscribe": "tsx scripts/retranscribe.ts",
-    "test:voice-grace": "tsx scripts/test-voice-disconnect-grace.ts"
+    "test:voice-grace": "tsx scripts/test-voice-disconnect-grace.ts",
+    "test:mcp": "tsx scripts/mcp-smoke-test.ts"
   },
   "keywords": [
     "discord",

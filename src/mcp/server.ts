@@ -1,8 +1,21 @@
+/**
+ * MCP server exposing Discord session transcripts/state via StreamableHTTP
+ * transport.
+ *
+ * Each MCP session gets its own StreamableHTTPServerTransport plus its own
+ * McpServer instance. The underlying SDK Server only supports a single
+ * transport per instance, so concurrent clients (e.g. Claude.ai plus any other
+ * consumer) each need a fresh server. activeServers tracks them so live
+ * transcript updates can be broadcast to every connected client via
+ * McpServerRegistry.
+ */
+
 import * as http from 'http';
 import * as net from 'net';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { getConfig } from '../config.js';
 import { logger } from '../logger.js';
 import { registerResources } from './resources.js';
@@ -10,16 +23,44 @@ import { registerTools } from './tools.js';
 
 const MCP_HOST = '127.0.0.1';
 const MCP_PORT = 3001;
+const MCP_PATH = '/mcp';
 
 let httpServer: http.Server | null = null;
-let mcpServer: McpServer | null = null;
 let activeSocketPath: string | null = null;
 
-// Store transports by session ID
-const transports = new Map<string, SSEServerTransport>();
+interface Session {
+  transport: StreamableHTTPServerTransport;
+  mcpServer: McpServer;
+}
 
-export function getMcpServer(): McpServer | null {
-  return mcpServer;
+const sessions = new Map<string, Session>();
+/** Set of all active McpServer instances, used for live-transcript broadcasts. */
+const activeServers = new Set<McpServer>();
+
+/** Registry of broadcast hooks. Returned by getMcpServerRegistry for live-event wiring. */
+export interface McpServerRegistry {
+  /**
+   * Run `fn` on every currently-connected McpServer instance. Errors per
+   * instance are isolated and logged.
+   */
+  broadcast(fn: (server: McpServer) => Promise<void>): Promise<void>;
+}
+
+const registry: McpServerRegistry = {
+  async broadcast(fn) {
+    for (const server of activeServers) {
+      try {
+        await fn(server);
+      } catch (err) {
+        logger.debug('MCP broadcast error:', err);
+      }
+    }
+  },
+};
+
+/** Returns the broadcast registry while the server is running, else null. */
+export function getMcpServerRegistry(): McpServerRegistry | null {
+  return httpServer ? registry : null;
 }
 
 /** Check if a Unix Domain Socket has a live listener. Returns true if alive. */
@@ -49,65 +90,101 @@ export async function startMcpServer(discordClient?: import('discord.js').Client
     return;
   }
 
-  mcpServer = new McpServer(
-    {
-      name: 'magi-assistant-discord',
-      version: '0.1.0',
-    },
-    {
-      capabilities: {
-        resources: {},
-        tools: {},
+  /** Build a fresh McpServer per session. The underlying Server only supports
+   *  a single transport, so each client must get its own instance. */
+  function createServerInstance(): McpServer {
+    const instance = new McpServer(
+      {
+        name: 'magi-assistant-discord',
+        version: '0.1.0',
       },
-    }
-  );
-
-  registerResources(mcpServer);
-  registerTools(mcpServer, discordClient);
+      {
+        capabilities: {
+          resources: {},
+          tools: {},
+        },
+      }
+    );
+    registerResources(instance);
+    registerTools(instance, discordClient);
+    return instance;
+  }
 
   httpServer = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
-    // Token auth: check Authorization header first, then query param fallback.
-    // Query token only accepted on GET /sse (EventSource can't send headers).
-    // POST /messages requires Authorization header to avoid token exposure in URLs.
+    if (url.pathname !== MCP_PATH) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+
     const expectedToken = config.mcpAuthToken;
     const authHeader = req.headers.authorization;
-    const headerOk = authHeader === `Bearer ${expectedToken}`;
-    const isGetSse = url.pathname === '/sse' && req.method === 'GET';
-    const queryTokenOk = isGetSse && url.searchParams.get('token') === expectedToken;
-    const authenticated = headerOk || queryTokenOk;
-
-    if (!authenticated) {
+    if (authHeader !== `Bearer ${expectedToken}`) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized' }));
       return;
     }
 
-    if (isGetSse) {
-      // SSE endpoint — create a new transport for this connection
-      const transport = new SSEServerTransport('/messages', res);
-      transports.set(transport.sessionId, transport);
+    const sessionIdHeader = req.headers['mcp-session-id'];
+    const sessionId = typeof sessionIdHeader === 'string' ? sessionIdHeader : undefined;
 
-      res.on('close', () => {
-        transports.delete(transport.sessionId);
-      });
-
-      await mcpServer!.server.connect(transport);
-    } else if (url.pathname === '/messages' && req.method === 'POST') {
-      // Message endpoint — find the transport and handle the message
-      const sessionId = url.searchParams.get('sessionId');
-      if (!sessionId || !transports.has(sessionId)) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid session' }));
+    if (sessionId) {
+      const session = sessions.get(sessionId);
+      if (!session) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unknown session' }));
         return;
       }
+      try {
+        await session.transport.handleRequest(req, res);
+      } catch (err) {
+        logger.warn('MCP transport handleRequest error:', err);
+      }
+      return;
+    }
 
-      const transport = transports.get(sessionId)!;
-      await transport.handlePostMessage(req, res);
-    } else {
-      res.writeHead(404);
-      res.end('Not found');
+    // No session header — only POST /mcp can initialize a new session.
+    if (req.method !== 'POST') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Missing Mcp-Session-Id header' }));
+      return;
+    }
+
+    const instance = createServerInstance();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid) => {
+        sessions.set(sid, { transport, mcpServer: instance });
+        activeServers.add(instance);
+        logger.debug(`MCP session initialized: ${sid}`);
+      },
+      onsessionclosed: (sid) => {
+        sessions.delete(sid);
+        activeServers.delete(instance);
+        logger.debug(`MCP session closed: ${sid}`);
+      },
+    });
+
+    transport.onclose = (): void => {
+      const sid = transport.sessionId;
+      if (sid) sessions.delete(sid);
+      activeServers.delete(instance);
+    };
+
+    try {
+      await instance.server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      logger.warn('MCP initialize failed:', err);
+      activeServers.delete(instance);
+      const sid = transport.sessionId;
+      if (sid) sessions.delete(sid);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Initialization failed' }));
+      }
     }
   });
 
@@ -119,7 +196,6 @@ export async function startMcpServer(discordClient?: import('discord.js').Client
       const isAlive = await checkSocketAlive(socketPath);
       if (isAlive) {
         logger.error(`MCP server: another instance is already listening on ${socketPath} — aborting MCP startup`);
-        mcpServer = null;
         httpServer.close();
         httpServer = null;
         return;
@@ -140,11 +216,11 @@ export async function startMcpServer(discordClient?: import('discord.js').Client
         logger.warn('Could not set socket permissions:', err);
       }
       activeSocketPath = socketPath;
-      logger.info(`MCP server listening on UDS ${socketPath} (mode 0600)`);
+      logger.info(`MCP server listening on UDS ${socketPath} (mode 0600), path ${MCP_PATH}`);
     });
   } else {
     httpServer.listen(MCP_PORT, MCP_HOST, () => {
-      logger.info(`MCP server listening on ${MCP_HOST}:${MCP_PORT}`);
+      logger.info(`MCP server listening on ${MCP_HOST}:${MCP_PORT}${MCP_PATH}`);
     });
   }
 
@@ -172,10 +248,9 @@ export function stopMcpServer(): void {
     activeSocketPath = null;
   }
 
-  for (const [, transport] of transports) {
-    transport.close?.();
+  for (const [, session] of sessions) {
+    session.transport.close?.();
   }
-  transports.clear();
-
-  mcpServer = null;
+  sessions.clear();
+  activeServers.clear();
 }

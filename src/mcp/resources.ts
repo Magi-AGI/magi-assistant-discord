@@ -12,6 +12,7 @@ import {
 } from '../db/queries.js';
 import { getActiveSessionForGuild, getAllActiveSessions } from '../session-manager.js';
 import type { LiveTranscriptManager } from './live-subscriptions.js';
+import type { McpServerRegistry } from './server.js';
 
 export function registerResources(server: McpServer): void {
   // session://active — active session metadata
@@ -244,16 +245,21 @@ export function registerResources(server: McpServer): void {
  * Clients can also pass ?updated_since= (ISO 8601) to catch interim→final updates
  * that reuse existing row IDs.
  */
-export function wireLiveTranscripts(server: McpServer, sessionId: string, liveTranscripts: LiveTranscriptManager): void {
+export function wireLiveTranscripts(registry: McpServerRegistry, sessionId: string, liveTranscripts: LiveTranscriptManager): void {
   const uri = `session://${sessionId}/transcript`;
 
   liveTranscripts.on('segment', () => {
-    // Notify all subscribed MCP clients that the transcript resource has been updated
-    try {
-      server.server.sendResourceUpdated({ uri });
-    } catch {
-      // Client may not be subscribed; non-critical
-    }
+    // Notify every connected MCP client that the transcript resource has been
+    // updated. Broadcasting over the registry (rather than a single server)
+    // means concurrent clients — and clients that connect mid-session — all
+    // receive resource-updated notifications.
+    void registry.broadcast(async (server) => {
+      try {
+        server.server.sendResourceUpdated({ uri });
+      } catch {
+        // Client may not be subscribed; non-critical
+      }
+    });
   });
 }
 
