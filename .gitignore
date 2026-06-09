@@ -5,3 +5,6 @@ data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Local Claude Code scratch (settings, one-off helpers, transcripts)
+.claude/
